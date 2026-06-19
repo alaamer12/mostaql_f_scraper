@@ -1,0 +1,20 @@
+[project]
+name = "mostaql-f-scraper"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "aiohttp>=3.14.1",
+    "arabic-reshaper>=3.0.1",
+    "beautifulsoup4>=4.15.0",
+    "dash>=4.2.0",
+    "dash-bootstrap-components>=2.0.4",
+    "lxml>=6.1.1",
+    "pandas>=3.0.3",
+    "plotly>=6.8.0",
+    "python-dateutil>=2.9.0.post0",
+    "requests>=2.34.2",
+    "tqdm>=4.68.3",
+    "unicodedata2>=17.0.1",
+]
