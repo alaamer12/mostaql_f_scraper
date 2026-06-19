@@ -1071,6 +1071,23 @@ function dashboard() {
     },
 
     // ── Helpers ──────────────────────────────────
+    getHistogramBins(data, key, binSize = 10, max = 100) {
+      const numBins = Math.ceil(max / binSize);
+      const bins = Array.from({ length: numBins }, () => 0);
+      data.forEach(r => {
+        const val = r[key] || 0;
+        let idx = Math.floor(val / binSize);
+        if (idx >= numBins) idx = numBins - 1;
+        if (idx >= 0) bins[idx]++;
+      });
+      return bins;
+    },
+    
+    getHistogramLabels(binSize = 10, max = 100) {
+      const numBins = Math.ceil(max / binSize);
+      return Array.from({ length: numBins }, (_, i) => `${i * binSize}-${(i + 1) * binSize}`);
+    },
+
     formatMinutes(m) {
       if (!m) return '—';
       if (m < 60) return `${m}m`;
@@ -1144,49 +1161,56 @@ function dashboard() {
     // ═══════════════════════════════════════
 
     renderScoreRanking(data) {
-      const sorted = _.orderBy(data, ['success_score'], ['desc']);
-      const names = sorted.map(r => r.name);
-      const scores = sorted.map(r => _.round(r.success_score, 2));
-      const max = _.max(scores);
-      const min = _.min(scores);
-      const avg = _.round(_.mean(scores), 2);
+      const scores = data.map(r => r.success_score || 0);
+      const max = _.max(scores) || 0;
+      const min = _.min(scores) || 0;
+      const avg = _.round(_.mean(scores) || 0, 2);
+      
+      const binSize = 5;
+      const bins = this.getHistogramBins(data, 'success_score', binSize, 100);
+      const labels = this.getHistogramLabels(binSize, 100);
+      
       this.renderChart('chart-score-ranking', this.apexDefaults({
         chart: { type: 'bar', height: 300 },
-        plotOptions: { bar: { horizontal: true, barHeight: '65%', borderRadius: 4,
-          dataLabels: { position: 'right' } } },
-        dataLabels: { enabled: true, formatter: v => v.toFixed(1), style: { fontSize: '11px', colors: ['#475569'] }, offsetX: 4 },
-        series: [{ name: 'Success Score', data: scores }],
-        xaxis: { categories: names, max: 100, labels: { style: { fontSize: '11px' } } },
-        yaxis: { labels: { style: { fontSize: '11px' } } },
-        colors: scores.map(s => s >= 85 ? '#10b981' : s >= 70 ? '#f59e0b' : '#ef4444'),
+        plotOptions: { bar: { horizontal: false, columnWidth: '90%', borderRadius: 2 } },
+        dataLabels: { enabled: false },
+        series: [{ name: 'Freelancers', data: bins }],
+        xaxis: { categories: labels, title: { text: 'Success Score Range' } },
+        yaxis: { title: { text: 'Count of Freelancers' } },
+        colors: ['#3b82f6'],
       }));
       this.insertInsights('insights-score-ranking', [
-        `Highest score: ${max} · Lowest: ${min} · Range: ${_.round(max-min,2)} points`,
-        `Platform average (top ${this.topN === 9999 ? 'all' : this.topN}): ${avg}`,
-        `${sorted.filter(r=>r.success_score>=85).length} freelancer(s) are in the Top tier (≥85)`,
+        `Distribution of scores across ${data.length} freelancers (bins of ${binSize})`,
+        `Highest score: ${max} · Lowest: ${min} · Platform Avg: ${avg}`,
+        `${data.filter(r=>r.success_score>=85).length} freelancer(s) are in the Top tier (≥85)`,
       ]);
     },
 
     renderCompletionOntime(data) {
-      const sorted = _.orderBy(data, ['success_score'], ['desc']);
-      const names = sorted.map(r => r.name);
+      const binSize = 10;
+      const completionBins = this.getHistogramBins(data, 'completion_rate', binSize, 100);
+      const ontimeBins = this.getHistogramBins(data, 'ontime_delivery_rate', binSize, 100);
+      const labels = this.getHistogramLabels(binSize, 100);
+      
       this.renderChart('chart-completion-ontime', this.apexDefaults({
-        chart: { type: 'bar', height: 300 },
-        plotOptions: { bar: { horizontal: false, columnWidth: '55%', borderRadius: 4 } },
+        chart: { type: 'area', height: 300 },
+        stroke: { curve: 'smooth', width: 2 },
+        fill: { type: 'solid', opacity: 0.3 },
+        dataLabels: { enabled: false },
         series: [
-          { name: 'Completion Rate', data: sorted.map(r => _.round(r.completion_rate, 1)) },
-          { name: 'On-Time Rate', data: sorted.map(r => _.round(r.ontime_delivery_rate, 1)) },
+          { name: 'Completion Rate Distribution', data: completionBins },
+          { name: 'On-Time Rate Distribution', data: ontimeBins },
         ],
-        xaxis: { categories: names, labels: { style: { fontSize: '10px' } } },
-        yaxis: { max: 100, labels: { formatter: v => `${v}%` } },
-        legend: { position: 'top' },
+        xaxis: { categories: labels, title: { text: 'Rate (%) Range' } },
+        yaxis: { title: { text: 'Count of Freelancers' } },
+        colors: ['#3b82f6', '#10b981'],
+        legend: { position: 'top' }
       }));
-      const perfGap = sorted.map(r => _.round(r.completion_rate - r.ontime_delivery_rate, 1));
-      const maxGapIdx = _.indexOf(perfGap, _.max(perfGap));
+      
       this.insertInsights('insights-completion-ontime', [
-        `Avg completion: ${_.round(_.meanBy(sorted,'completion_rate'),1)}% · Avg on-time: ${_.round(_.meanBy(sorted,'ontime_delivery_rate'),1)}%`,
-        `Largest gap (completes but late): ${sorted[maxGapIdx]?.name || '—'} (${perfGap[maxGapIdx]}% gap)`,
-        `${sorted.filter(r=>r.completion_rate===100&&r.ontime_delivery_rate===100).length} freelancer(s) achieve perfect 100/100`,
+        `Compares the distribution volume of completion rates vs on-time rates`,
+        `Avg completion: ${_.round(_.meanBy(data,'completion_rate')||0,1)}% · Avg on-time: ${_.round(_.meanBy(data,'ontime_delivery_rate')||0,1)}%`,
+        `Most freelancers cluster near 100%, but on-time delivery typically trails completion`
       ]);
     },
 
@@ -1426,20 +1450,23 @@ function dashboard() {
     },
 
     renderRehireDist(data) {
-      const sorted = _.orderBy(data, ['rehire_rate'], ['desc']);
+      const binSize = 10;
+      const bins = this.getHistogramBins(data, 'rehire_rate', binSize, 100);
+      const labels = this.getHistogramLabels(binSize, 100);
+      
       this.renderChart('chart-rehire-dist', this.apexDefaults({
         chart: { type: 'bar', height: 300 },
-        plotOptions: { bar: { horizontal: false, columnWidth: '60%', borderRadius: 4 } },
-        dataLabels: { enabled: true, formatter: v=>`${v.toFixed(1)}%`, style: { fontSize: '10px', colors: ['#475569'] } },
-        series: [{ name: 'Rehire Rate', data: sorted.map(r=>_.round(r.rehire_rate,1)) }],
-        xaxis: { categories: sorted.map(r=>r.name), labels: { style: { fontSize: '10px' } } },
-        yaxis: { max: 100, labels: { formatter: v=>`${v}%` } },
+        plotOptions: { bar: { horizontal: false, columnWidth: '85%', borderRadius: 2 } },
+        dataLabels: { enabled: false },
+        series: [{ name: 'Freelancers', data: bins }],
+        xaxis: { categories: labels, title: { text: 'Rehire Rate Range (%)' } },
+        yaxis: { title: { text: 'Count' } },
         colors: ['#8b5cf6'],
       }));
       this.insertInsights('insights-rehire-dist', [
-        `Highest rehire: ${sorted[0]?.name} (${_.round(sorted[0]?.rehire_rate,1)}%)`,
-        `Avg rehire rate: ${_.round(_.meanBy(data,'rehire_rate'),1)}%`,
-        'A rehire rate above 30% indicates strong client loyalty and project delivery quality',
+        `Shows the distribution of rehire rates across the platform`,
+        `Avg rehire rate: ${_.round(_.meanBy(data,'rehire_rate')||0,1)}%`,
+        `A right-skewed distribution indicates high general client satisfaction`
       ]);
     },
 
@@ -1497,20 +1524,23 @@ function dashboard() {
     },
 
     renderCommDist(data) {
-      const sorted = _.orderBy(data, ['communication_success_rate'], ['desc']);
+      const binSize = 10;
+      const bins = this.getHistogramBins(data, 'communication_success_rate', binSize, 100);
+      const labels = this.getHistogramLabels(binSize, 100);
+      
       this.renderChart('chart-comm-dist', this.apexDefaults({
         chart: { type: 'bar', height: 300 },
-        plotOptions: { bar: { horizontal: false, columnWidth: '60%', borderRadius: 4 } },
-        dataLabels: { enabled: true, formatter: v=>`${v.toFixed(1)}%`, style: { fontSize: '10px', colors: ['#475569'] } },
-        series: [{ name: 'Communication Success', data: sorted.map(r=>_.round(r.communication_success_rate,1)) }],
-        xaxis: { categories: sorted.map(r=>r.name), labels: { style: { fontSize: '10px' } } },
-        yaxis: { max: 100, labels: { formatter: v=>`${v}%` } },
+        plotOptions: { bar: { horizontal: false, columnWidth: '85%', borderRadius: 2 } },
+        dataLabels: { enabled: false },
+        series: [{ name: 'Freelancers', data: bins }],
+        xaxis: { categories: labels, title: { text: 'Communication Success (%)' } },
+        yaxis: { title: { text: 'Count' } },
         colors: ['#06b6d4'],
       }));
       this.insertInsights('insights-comm-dist', [
-        `Best communicator: ${sorted[0]?.name} (${_.round(sorted[0]?.communication_success_rate,1)}%)`,
-        `Avg communication rate: ${_.round(_.meanBy(data,'communication_success_rate'),1)}%`,
-        'Low communication rate may reflect niche positioning or conservative quoting strategy',
+        `Distribution of communication success rates`,
+        `Avg communication rate: ${_.round(_.meanBy(data,'communication_success_rate')||0,1)}%`,
+        'Peaks at the high end indicate proactive freelancer engagement'
       ]);
     },
 
