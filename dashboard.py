@@ -21,7 +21,7 @@ import dash_bootstrap_components as dbc
 # DATA LOADING & PREPARATION
 # ---------------------------------------------------------------------------
 
-DATA_FILE = "mostaql_freelancers_analytics.json"
+DATA_FILE = "mostaql_development_profiles.json"
 
 
 def load_data(filepath: str = DATA_FILE) -> pd.DataFrame:

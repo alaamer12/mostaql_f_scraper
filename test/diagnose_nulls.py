@@ -30,14 +30,14 @@ from pathlib import Path
 import requests
 from bs4 import BeautifulSoup
 
-# Re-use parser + label tables from scraper
-from scraper import (
+from config import CONFIG
+from parsing import (
     STAT_MAP,
-    CONFIG,
     _normalize_arabic,
-    _parse_profile_page,
     _resolve_stat_field,
+    parse_profile_page as _parse_profile_page,
 )
+from storage import load_records
 
 JSON_PATH = Path(CONFIG["OUTPUT_JSON"])
 HEADERS = {

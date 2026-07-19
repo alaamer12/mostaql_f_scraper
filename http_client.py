@@ -132,8 +132,11 @@ class AdaptiveRateLimiter:
         self.total_requests += 1
 
         async def _once() -> tuple[int, str]:
-            await self._acquire_slot()
+            # Semaphore FIRST — only `sem` worth of coroutines may compete
+            # for rate-limit tokens.  Without this, paginate_directory spawns
+            # 50 tasks that all block on the limiter before dir_sem can cap them.
             async with sem:
+                await self._acquire_slot()
                 async with session.get(
                     url,
                     headers=headers,
