@@ -33,6 +33,20 @@ class ProfileDetails:
     stats: Dict[str, Any] = field(default_factory=dict)
     scraped_at: str = field(default_factory=lambda: datetime.now().isoformat())
 
+@dataclass(frozen=True)
+class PageCountItem:
+    """Milestone emitted by the discovery stage for one solved combination."""
+    label: str
+    combo: Dict[str, Any]
+    last_page: int
+
+@dataclass(frozen=True)
+class RawProfileRecord:
+    """Milestone emitted by the fetch stage: raw, unparsed profile HTML."""
+    profile_url: str
+    html: Optional[str] = None
+    portfolio_html: Optional[str] = None
+
 @dataclass
 class ScrapeConfig:
     """Global configuration for the scraping pipeline."""

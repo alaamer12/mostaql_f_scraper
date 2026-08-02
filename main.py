@@ -1,4 +1,5 @@
 import asyncio
+import sys
 from typing import Optional
 import typer
 from pathlib import Path
@@ -8,6 +9,7 @@ from rich.panel import Panel
 # Import internal modules
 from src.models import ScrapeConfig
 from src.services.orchestrator import ScraperOrchestrator
+from src.pipeline import cli_chain
 
 app = typer.Typer(
     name="mostaql-scraper",
@@ -17,7 +19,11 @@ app = typer.Typer(
         "Discovery -> Extraction -> Fetch -> Parse. Every phase can run "
         "independently, resume from its own checkpoint, and export its "
         "own results to JSON/CSV. Run 'python main.py examples' for a "
-        "quick-start cookbook of common invocations."
+        "quick-start cookbook of common invocations.\n\n"
+        "Phases can also be chained into a concurrent streaming pipeline "
+        "with the --pipelined separator, e.g. "
+        "'python main.py discovery --pipelined extract --pipelined fetch'. "
+        "Each stage starts as soon as its upstream produces its first item."
     ),
     epilog="Run [bold]python main.py examples[/] for full usage examples.",
     add_completion=False,
@@ -50,10 +56,15 @@ def discovery(
     result to the pagination cache so Phase 2 (extract) can reuse it without
     repeating the search.
 
+    Pipelined positions: start. Discovery always seeds itself from the
+    combo list, so it can only open a chain; every solved combination is
+    streamed downstream immediately.
+
     Examples:
         python main.py discovery
         python main.py discovery --new
         python main.py discovery --no-continue
+        python main.py discovery --pipelined extract
     """
     orch = get_orchestrator()
     asyncio.run(orch.run_discovery(use_continue=resume and not new))
@@ -77,9 +88,14 @@ def extract(
     extract a de-duplicated set of freelancer names and profile URLs, saved
     as both JSON and CSV for downstream phases.
 
+    Pipelined positions: start, middle, end. In start position it seeds
+    from pagination_cache.json (``--new``/``--continue`` apply to the
+    existing URL list); otherwise it consumes combos streamed by discovery.
+
     Examples:
         python main.py extract
         python main.py extract --new
+        python main.py discovery --pipelined extract --pipelined fetch
     """
     orch = get_orchestrator()
     asyncio.run(orch.run_extraction(use_continue=resume and not new))
@@ -103,10 +119,15 @@ def fetch(
     extracted URL and caches the raw HTML to disk (no parsing yet), so
     Phase 4 (parse) can be re-run repeatedly without re-hitting the network.
 
+    Pipelined positions: start, middle, end. In start position it seeds
+    from the extracted URL list; otherwise it consumes freelancers streamed
+    by extract. ``--limit`` caps the number of profiles in either position.
+
     Examples:
         python main.py fetch
         python main.py fetch --limit 100
         python main.py fetch --no-continue
+        python main.py fetch --limit 500 --pipelined parse
     """
     orch = get_orchestrator()
     asyncio.run(orch.run_fetch(limit=limit, use_continue=resume))
@@ -127,8 +148,13 @@ def parse(
     no network calls) into structured ``ProfileDetails`` records, exported
     to JSON and CSV.
 
+    Pipelined positions: start, middle, end. In start position it seeds
+    from checkpoint_fetch.jsonl; otherwise it parses raw records streamed
+    by fetch as they are downloaded.
+
     Examples:
         python main.py parse
+        python main.py fetch --pipelined parse
     """
     orch = get_orchestrator()
     orch.run_parse(use_continue=resume)
@@ -237,6 +263,12 @@ def examples(
         "[bold cyan]Fetch + Parse together (Deep Scrape):[/]\n"
         "[green]python main.py deep-scrape --limit 100 --continue[/]\n\n"
 
+        "[bold cyan]Pipelined (all stages stream concurrently):[/]\n"
+        "[green]python main.py discovery --pipelined extract --pipelined fetch --pipelined parse[/]\n"
+        "[green]python main.py extract --pipelined fetch[/]\n"
+        "[green]python main.py fetch --limit 500 --pipelined parse[/]\n"
+        "  discovery: start  |  extract/fetch/parse: start, middle, end\n\n"
+
         "[bold cyan]Statistics & Analytics:[/]\n"
         "[green]python main.py stats[/]\n"
         "[green]python main.py dashboard[/]\n\n"
@@ -275,6 +307,7 @@ def cleanup():
         config.resolve_path("checkpoint_fetch_json"),
         config.resolve_path("pagination_cache"),
         "scraper.log",
+        "pipeline.log",
         config.resolve_path("output_json"),
         config.resolve_path("output_csv"),
         config.resolve_path("profiles_json"),
@@ -332,5 +365,25 @@ def dashboard():
         console.print("[red]Dash or Bootstrap components not installed. Run: pip install dash dash-bootstrap-components[/]")
 
 
+def main() -> None:
+    """Entry point: dispatch to the pipelined runner or to plain Typer."""
+    argv = sys.argv[1:]
+    if not cli_chain.is_pipelined(argv):
+        app()
+        return
+
+    from src.pipeline.runner import PipelineRunner
+
+    try:
+        stages = cli_chain.parse_chain(argv, app)
+    except cli_chain.ChainError as exc:
+        console.print(f"[bold red]Invalid pipeline:[/] {exc}")
+        sys.exit(2)
+
+    console.print(f"[bold blue]Pipelined run:[/] {cli_chain.format_chain(stages)}")
+    runner = PipelineRunner(get_orchestrator(), stages, live_display=True)
+    sys.exit(runner.run())
+
+
 if __name__ == "__main__":
-    app()
+    main()

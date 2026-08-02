@@ -1,7 +1,9 @@
 """Console output helpers and metrics for the scraper pipeline."""
 
+from collections import deque
 from dataclasses import dataclass, field, fields
-from typing import Dict, List, Optional, Set
+from typing import Any, Deque, Dict, List, Optional, Sequence, Set
+import logging
 import threading
 import sys
 from pathlib import Path
@@ -108,37 +110,242 @@ class MetricsRegistry:
 
     def __init__(self) -> None:
         self._phases: List[PhaseMetrics] = []
+        self._order: List[str] = []
 
     def register(self, metrics: PhaseMetrics) -> None:
         self._phases.append(metrics)
 
+    def set_order(self, stage_names: Sequence[str]) -> None:
+        """Report phases in pipeline order rather than completion order."""
+        self._order = [name.lower() for name in stage_names]
+
+    def _order_key(self, metrics: PhaseMetrics) -> int:
+        name = metrics.phase_name.lower()
+        for index, stage in enumerate(self._order):
+            if stage in name or name.startswith(stage):
+                return index
+        return len(self._order)
+
     @property
     def phases(self) -> List[PhaseMetrics]:
-        return list(self._phases)
+        if not self._order:
+            return list(self._phases)
+        return sorted(self._phases, key=self._order_key)
 
     def print_aggregate(self) -> None:
         """Print a combined summary across all phases run in this session."""
         if len(self._phases) < 2:
             return
 
+        phases = self.phases
         write_banner("AGGREGATED SUMMARY (ALL PHASES)")
-        write_line(f"  Phases run: {', '.join(p.phase_name for p in self._phases)}")
+        write_line(f"  Phases run: {', '.join(p.phase_name for p in phases)}")
 
         overlappable = PhaseMetrics.overlappable_fields() - {"phase_name"}
         non_overlappable = PhaseMetrics.non_overlappable_fields()
 
         write_line("  -- Cumulative (summed, safe to overlap) --")
         for name in sorted(overlappable):
-            total = sum(getattr(p, name) for p in self._phases)
+            total = sum(getattr(p, name) for p in phases)
             write_line(f"    {name:20s}: {total}")
 
         write_line("  -- Per-phase (not summed, may double-count if aggregated) --")
         for name in sorted(non_overlappable):
-            per_phase = {p.phase_name: getattr(p, name) for p in self._phases if getattr(p, name)}
+            per_phase = {p.phase_name: getattr(p, name) for p in phases if getattr(p, name)}
             if per_phase:
                 parts = ", ".join(f"{k}={v}" for k, v in per_phase.items())
                 write_line(f"    {name:20s}: {parts}")
         write_line("")
+
+
+class RollingLogHandler(logging.Handler):
+    """Keeps the last N log records so they can be shown in a live panel."""
+
+    def __init__(self, capacity: int = 8):
+        super().__init__()
+        self.records: Deque[str] = deque(maxlen=capacity)
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            self.records.append(self.format(record))
+        except Exception:  # pragma: no cover - never break the run on logging
+            pass
+
+
+class _StageBar:
+    """tqdm-compatible handle for one task of the live pipeline display."""
+
+    def __init__(self, display: "PipelineDisplay", task_id: Any, total: Optional[int]):
+        self._display = display
+        self._task_id = task_id
+        self._total = total
+        self.completed = 0
+
+    @property
+    def total(self) -> Optional[int]:
+        return self._total
+
+    @total.setter
+    def total(self, value: Optional[int]) -> None:
+        self._total = value
+        self._display.set_total(self._task_id, value)
+
+    def update(self, n: int = 1) -> None:
+        self.completed += n
+        self._display.advance(self._task_id, n)
+
+    def refresh(self) -> None:
+        pass
+
+    def close(self) -> None:
+        self._display.finish(self._task_id)
+
+
+class PipelineDisplay:
+    """Live multi-bar view of a pipelined run.
+
+    One progress bar per stage (created lazily through :meth:`bar_factory`,
+    which the orchestrator uses instead of ``tqdm``), plus a panel showing
+    inbound queue depth per link and a bounded rolling log. Every log
+    record is also mirrored to ``pipeline.log`` so nothing is lost.
+    """
+
+    def __init__(self, stage_names: Sequence[str], channels: Optional[Sequence[Any]] = None,
+                 log_path: str = "pipeline.log", log_lines: int = 8):
+        self.stage_names = list(stage_names)
+        self.channels = list(channels or [])
+        self.log_path = log_path
+        self._live = None
+        self._progress = None
+        self._tasks: Dict[Any, Optional[int]] = {}
+        self._rolling = RollingLogHandler(capacity=log_lines)
+        self._file_handler: Optional[logging.Handler] = None
+        self._available = True
+
+    # -- lifecycle -----------------------------------------------------
+    def start(self) -> None:
+        try:
+            from rich.live import Live
+            from rich.progress import (
+                BarColumn, MofNCompleteColumn, Progress, SpinnerColumn,
+                TextColumn, TimeElapsedColumn,
+            )
+        except Exception:  # pragma: no cover - rich is a hard dependency in practice
+            self._available = False
+            return
+
+        self._progress = Progress(
+            SpinnerColumn(),
+            TextColumn("[bold blue]{task.fields[stage]}"),
+            BarColumn(),
+            MofNCompleteColumn(),
+            TextColumn("{task.fields[rate]}"),
+            TimeElapsedColumn(),
+        )
+        self._live = Live(self._render(), refresh_per_second=4, transient=False)
+        self._live.start()
+        self._install_logging()
+
+    def stop(self) -> None:
+        self._remove_logging()
+        if self._live is not None:
+            try:
+                self._live.update(self._render())
+                self._live.stop()
+            except Exception:  # pragma: no cover - defensive
+                pass
+            self._live = None
+
+    def __enter__(self) -> "PipelineDisplay":
+        self.start()
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        self.stop()
+
+    # -- progress API used by the orchestrator -------------------------
+    def bar_factory(self, desc: str, total: Optional[int] = None, initial: int = 0):
+        if not self._available or self._progress is None:
+            return tqdm(total=total, initial=initial, desc=desc)
+        task_id = self._progress.add_task(desc, total=total, completed=initial, stage=desc, rate="")
+        self._tasks[task_id] = total
+        return _StageBar(self, task_id, total)
+
+    def set_total(self, task_id: Any, total: Optional[int]) -> None:
+        if self._progress is not None:
+            self._progress.update(task_id, total=total)
+            self._tasks[task_id] = total
+        self._refresh()
+
+    def advance(self, task_id: Any, amount: int = 1) -> None:
+        if self._progress is not None:
+            self._progress.advance(task_id, amount)
+        self._refresh()
+
+    def finish(self, task_id: Any) -> None:
+        if self._progress is None:
+            return
+        task = next((t for t in self._progress.tasks if t.id == task_id), None)
+        if task is not None and task.total is None:
+            self._progress.update(task_id, total=task.completed)
+        self._refresh()
+
+    # -- rendering -----------------------------------------------------
+    def _refresh(self) -> None:
+        if self._live is not None:
+            try:
+                self._live.update(self._render())
+            except Exception:  # pragma: no cover - defensive
+                pass
+
+    def _render(self):
+        from rich.console import Group
+        from rich.panel import Panel
+
+        parts = []
+        if self._progress is not None:
+            self._update_rates()
+            parts.append(self._progress)
+        queues = self._queue_line()
+        if queues:
+            parts.append(Panel(queues, title="queues", expand=False))
+        if self._rolling.records:
+            parts.append(Panel("\n".join(self._rolling.records), title="log", expand=False))
+        return Group(*parts)
+
+    def _update_rates(self) -> None:
+        for task in self._progress.tasks:
+            speed = task.speed or 0.0
+            self._progress.update(task.id, rate=f"{speed:5.1f}/s")
+
+    def _queue_line(self) -> str:
+        if not self.channels:
+            return ""
+        return "   ".join(
+            f"{getattr(ch, 'name', '?')}: {ch.depth}/{ch.maxsize}" for ch in self.channels
+        )
+
+    # -- logging -------------------------------------------------------
+    def _install_logging(self) -> None:
+        formatter = logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s", "%H:%M:%S")
+        self._rolling.setFormatter(formatter)
+        root = logging.getLogger()
+        root.addHandler(self._rolling)
+        try:
+            self._file_handler = logging.FileHandler(self.log_path, encoding="utf-8")
+            self._file_handler.setFormatter(formatter)
+            root.addHandler(self._file_handler)
+        except Exception:  # pragma: no cover - read-only filesystem
+            self._file_handler = None
+
+    def _remove_logging(self) -> None:
+        root = logging.getLogger()
+        for handler in (self._rolling, self._file_handler):
+            if handler is not None and handler in root.handlers:
+                root.removeHandler(handler)
+        if self._file_handler is not None:
+            self._file_handler.close()
+            self._file_handler = None
 
 
 def configure_stdout() -> None:

@@ -1,3 +1,4 @@
+import asyncio
 import json
 import csv
 from pathlib import Path
@@ -12,7 +13,31 @@ class StorageService:
     """Handles data persistence, checkpointing, and format conversion."""
 
     def __init__(self):
-        pass
+        self._locks: Dict[str, asyncio.Lock] = {}
+
+    def _lock_for(self, path: Union[str, Path]) -> asyncio.Lock:
+        """Return the write lock guarding a single file path.
+
+        Concurrent pipeline stages may append to different checkpoints at
+        the same time; one lock per path keeps their lines from interleaving
+        without serialising unrelated files.
+        """
+        key = str(Path(path))
+        lock = self._locks.get(key)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._locks[key] = lock
+        return lock
+
+    async def asave_json(self, data: Any, path: Union[str, Path]) -> None:
+        """Concurrency-safe variant of :meth:`save_json`."""
+        async with self._lock_for(path):
+            self.save_json(data, path)
+
+    async def asave_jsonl(self, records: List[Dict[str, Any]], path: Union[str, Path], append: bool = True) -> None:
+        """Concurrency-safe variant of :meth:`save_jsonl`."""
+        async with self._lock_for(path):
+            self.save_jsonl(records, path, append=append)
 
     def save_json(self, data: Any, path: Union[str, Path]) -> None:
         """Save data to a JSON file."""

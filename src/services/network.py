@@ -18,6 +18,27 @@ from ..utils.reporting import PhaseMetrics
 
 log = logging.getLogger(__name__)
 
+_shared_limiter: Optional[AsyncLimiter] = None
+
+
+def enable_shared_limiter(config: "ScrapeConfig") -> AsyncLimiter:
+    """Make every future NetworkService share one process-wide token bucket.
+
+    Used by the pipelined runner: several stages hit the network at the same
+    time, and without a shared limiter the effective request rate would be
+    multiplied by the number of running stages.
+    """
+    global _shared_limiter
+    _shared_limiter = AsyncLimiter(config.rate_limit_burst, config.rate_limit_period)
+    return _shared_limiter
+
+
+def disable_shared_limiter() -> None:
+    """Restore per-service rate limiting (the default, non-pipelined mode)."""
+    global _shared_limiter
+    _shared_limiter = None
+
+
 class RetryableHTTPError(Exception):
     """HTTP response that should be retried."""
     def __init__(self, status: int, url: str, retry_after: Optional[float] = None):
@@ -33,7 +54,7 @@ class NetworkService:
         self.config = config
         self.worker_id = worker_id
         self.metrics = metrics
-        self._limiter = AsyncLimiter(config.rate_limit_burst, config.rate_limit_period)
+        self._limiter = _shared_limiter or AsyncLimiter(config.rate_limit_burst, config.rate_limit_period)
         self._cooldown_until = 0.0
         self._lock = asyncio.Lock()
         self._ok_streak = 0
