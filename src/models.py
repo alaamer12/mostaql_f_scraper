@@ -56,6 +56,10 @@ class ScrapeConfig:
     dir_concurrency: int = 3
     rate_limit_burst: int = 6
     rate_limit_period: float = 2.0
+    # Discovery uses its own, deliberately gentler per-worker budget
+    # (the pre-refactor brute-force script used 2 requests / 2.5s per worker).
+    discovery_rate_burst: int = 2
+    discovery_rate_period: float = 2.5
     max_retries: int = 6
     retry_wait_min: int = 2
     retry_wait_max: int = 90

@@ -20,6 +20,7 @@ from .storage import StorageService
 from .exporter import ExporterService
 from ..utils.combos import ComboManager
 from ..utils.reporting import (
+    WORKERS,
     PhaseMetrics,
     MetricsRegistry,
     print_scraper_header,
@@ -75,6 +76,12 @@ class ScraperOrchestrator:
         if refresh is not None:
             refresh()
 
+    def _header(self, max_pages, concurrency: int, rate: str) -> None:
+        """Print the banner, unless a live dashboard already owns the screen."""
+        if self.progress_factory is not None:
+            return
+        print_scraper_header(max_pages, concurrency, rate)
+
     @staticmethod
     def _close_bar(bar) -> None:
         close = getattr(bar, "close", None)
@@ -103,7 +110,7 @@ class ScraperOrchestrator:
         """
         metrics = PhaseMetrics(phase_name="Discovery")
         start_time = time.monotonic()
-        print_scraper_header("Auto (Binary Search)", self.config.dir_concurrency, f"{self.config.rate_limit_burst}/{self.config.rate_limit_period}s")
+        self._header("Auto (Binary Search)", self.config.dir_concurrency, f"{self.config.discovery_rate_burst}/{self.config.discovery_rate_period}s per worker")
         log.info("Starting Discovery Phase...")
 
         combos = self.combo_manager.get_combinations()
@@ -129,20 +136,22 @@ class ScraperOrchestrator:
         for combo in pending:
             queue.put_nowait(combo)
 
-        sem = asyncio.Semaphore(self.config.dir_concurrency)
         pbar = self._make_bar("Discovering Combos", total=len(combos), initial=len(combos) - len(pending))
 
         try:
-            async with aiohttp.ClientSession() as session:
-                workers = [
-                    asyncio.create_task(
-                        self._discovery_worker(i, session, queue, sem, page_counts, pbar, metrics, out, cache_path)
-                    )
-                    for i in range(self.config.dir_concurrency)
-                ]
-                await queue.join()
-                for w in workers:
-                    w.cancel()
+            # One session (and thus one cookie jar / connection pool) per
+            # worker, exactly like the pre-refactor brute-force script: a
+            # worker stalled in a cooldown then never affects the others.
+            workers = [
+                asyncio.create_task(
+                    self._discovery_worker(i, queue, page_counts, pbar, metrics, out, cache_path)
+                )
+                for i in range(self.config.dir_concurrency)
+            ]
+            await queue.join()
+            for w in workers:
+                w.cancel()
+            await asyncio.gather(*workers, return_exceptions=True)
         finally:
             self._close_bar(pbar)
             await out.close()
@@ -157,14 +166,40 @@ class ScraperOrchestrator:
         log.info(f"Discovery complete. {len(page_counts)} combos processed, {success} with pages.")
         return page_counts
 
-    async def _discovery_worker(self, worker_id, session, queue, sem, page_counts, pbar, metrics: PhaseMetrics,
+    async def _discovery_worker(self, worker_id, queue, page_counts, pbar, metrics: PhaseMetrics,
                                 out: Optional[Channel] = None, cache_path: Optional[str] = None):
-        net = NetworkService(self.config, worker_id=worker_id, metrics=metrics)
+        net = NetworkService(
+            self.config,
+            worker_id=worker_id,
+            metrics=metrics,
+            rate_burst=self.config.discovery_rate_burst,
+            rate_period=self.config.discovery_rate_period,
+        )
+        # Each worker gets its own slot, so no worker can be starved by a
+        # sibling that is sleeping off a 429.
+        sem = asyncio.Semaphore(1)
+        async with aiohttp.ClientSession() as session:
+            await self._prime_cookies(session, sem, net, worker_id)
+            await self._discovery_loop(worker_id, session, queue, sem, net, page_counts, pbar, metrics, out, cache_path)
+
+    async def _prime_cookies(self, session, sem, net, worker_id) -> None:
+        """Warm up a worker session so the first real request carries cookies."""
+        try:
+            status, _ = await net.get(session, self.config.base_url, sem, ua_index=worker_id)
+            if status != 200:
+                log.warning(f"[W{worker_id}] cookie priming failed (HTTP {status})")
+        except Exception as e:
+            log.warning(f"[W{worker_id}] cookie priming failed: {e}")
+
+    async def _discovery_loop(self, worker_id, session, queue, sem, net, page_counts, pbar, metrics: PhaseMetrics,
+                              out: Optional[Channel] = None, cache_path: Optional[str] = None):
         while True:
+            net.state.set("waiting for combo", "")
             combo = await queue.get()
             try:
                 metrics.increment("combos_processed")
-                last_page = await self._find_max_pages(session, combo, sem, net)
+                net.state.set("searching", self.combo_manager.get_label(combo))
+                last_page = await self._find_max_pages(session, combo, sem, net, worker_id)
                 if last_page > 0:
                     metrics.increment("pages_found", last_page)
                     if last_page > metrics.max_pages_seen:
@@ -185,13 +220,13 @@ class ScraperOrchestrator:
             finally:
                 queue.task_done()
 
-    async def _find_max_pages(self, session, combo, sem, net) -> int:
+    async def _find_max_pages(self, session, combo, sem, net, ua_index: int = 0) -> int:
         """Find max pages for a combo using binary search."""
-        if not await self._check_page_exists(session, combo, 1, sem, net):
+        if not await self._check_page_exists(session, combo, 1, sem, net, ua_index):
             return 0
 
         lo, hi = 1, self.config.binary_search_initial
-        while await self._check_page_exists(session, combo, hi, sem, net):
+        while await self._check_page_exists(session, combo, hi, sem, net, ua_index):
             lo = hi
             hi *= 2
             if hi > 10000:
@@ -199,15 +234,15 @@ class ScraperOrchestrator:
 
         while lo + 1 < hi:
             mid = (lo + hi) // 2
-            if await self._check_page_exists(session, combo, mid, sem, net):
+            if await self._check_page_exists(session, combo, mid, sem, net, ua_index):
                 lo = mid
             else:
                 hi = mid
         return lo
 
-    async def _check_page_exists(self, session, combo, page, sem, net) -> bool:
+    async def _check_page_exists(self, session, combo, page, sem, net, ua_index: int = 0) -> bool:
         url = self.combo_manager.get_url(combo, page)
-        status, html = await net.get(session, url, sem)
+        status, html = await net.get(session, url, sem, ua_index=ua_index)
         if status == 404 or not html:
             return False
         freelancers = self.parser.parse_directory(html)
@@ -308,7 +343,7 @@ class ScraperOrchestrator:
         """
         metrics = PhaseMetrics(phase_name="URL Extraction")
         start_time = time.monotonic()
-        print_scraper_header("From Cache", self.config.dir_concurrency, f"{self.config.rate_limit_burst}/{self.config.rate_limit_period}s")
+        self._header("From Cache", self.config.dir_concurrency, f"{self.config.rate_limit_burst}/{self.config.rate_limit_period}s")
         log.info("Starting URL Extraction Phase...")
 
         combos_by_label = {self.combo_manager.get_label(c): c for c in self.combo_manager.get_combinations()}
@@ -382,8 +417,10 @@ class ScraperOrchestrator:
                                  out: Optional[Channel] = None):
         net = NetworkService(self.config, worker_id=worker_id, metrics=metrics)
         while True:
+            net.state.set("waiting for combo", "")
             combo, last_page = await queue.get()
             try:
+                net.state.set("paging", self.combo_manager.get_label(combo))
                 for page in range(1, last_page + 1):
                     url = self.combo_manager.get_url(combo, page)
                     _, html = await net.get(session, url, sem)
@@ -403,6 +440,7 @@ class ScraperOrchestrator:
             except Exception as e:
                 log.error(f"Extraction worker {worker_id} failed on combo {combo}: {e}")
             finally:
+                net.state.set("idle", "")
                 queue.task_done()
 
     # ------------------------------------------------------------------
@@ -427,7 +465,7 @@ class ScraperOrchestrator:
         """
         metrics = PhaseMetrics(phase_name="Fetch")
         start_time = time.monotonic()
-        print_scraper_header(limit or "All", self.config.profile_concurrency, f"{self.config.rate_limit_burst}/{self.config.rate_limit_period}s")
+        self._header(limit or "All", self.config.profile_concurrency, f"{self.config.rate_limit_burst}/{self.config.rate_limit_period}s")
         log.info("Starting Fetch Phase...")
 
         urls: List[str] = []
@@ -506,6 +544,7 @@ class ScraperOrchestrator:
                             out: Optional[Channel] = None):
         net = NetworkService(self.config, worker_id=worker_id, metrics=metrics)
         while True:
+            net.state.set("waiting for url", "")
             url = await queue.get()
             try:
                 status, html = await net.get(session, url, sem)
@@ -534,6 +573,7 @@ class ScraperOrchestrator:
                 log.error(f"Fetch worker {worker_id} failed on {url}: {e}")
                 metrics.increment("fetch_failed")
             finally:
+                net.state.set("idle", "")
                 queue.task_done()
 
     # ------------------------------------------------------------------
@@ -578,18 +618,26 @@ class ScraperOrchestrator:
 
         results: List[ProfileDetails] = []
         pbar = self._make_bar("Parsing Profiles", total=len(seeded))
+        state = WORKERS.get("Parse", 0)
 
         try:
             for record in seeded:
+                state.set("parsing", record.profile_url)
+                state.requests += 1
                 await self._parse_record(record, results, metrics, out)
                 pbar.update(1)
 
             if inp is not None:
+                state.set("waiting for html", "")
                 async for record in inp:
+                    state.set("parsing", record.profile_url)
+                    state.requests += 1
                     self._bump_total(pbar)
                     await self._parse_record(record, results, metrics, out)
                     pbar.update(1)
+                    state.set("waiting for html", "")
         finally:
+            state.set("idle", "")
             self._close_bar(pbar)
             await out.close()
 

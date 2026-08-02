@@ -1,0 +1,72 @@
+06:05:29 WARNING src.services.network: [W0] rate-limit hit #1 -> cooldown 30s
+06:05:29 WARNING src.services.network: Retry 1/6: HTTP 429 → https://mostaql.com/freelancers?verified=false&specialities=development&rating=1&page=21
+06:05:29 WARNING src.services.network: [W2] rate-limit hit #1 -> cooldown 30s
+06:05:29 WARNING src.services.network: Retry 1/6: HTTP 429 → https://mostaql.com/freelancers?verified=false&specialities=development&rating=2&page=38
+06:05:29 WARNING src.services.network: [W1] rate-limit hit #1 -> cooldown 30s
+06:05:29 WARNING src.services.network: Retry 1/6: HTTP 429 → https://mostaql.com/freelancers?verified=false&specialities=development&page=24
+06:05:30 WARNING src.services.network: [W2] rate-limit hit #1 -> cooldown 30s
+06:05:30 WARNING src.services.network: Retry 1/6: HTTP 429 → https://mostaql.com/freelancers?verified=false&specialities=development&titles=researcher&page=13
+06:05:30 WARNING src.services.network: [W1] rate-limit hit #1 -> cooldown 30s
+06:05:30 WARNING src.services.network: Retry 1/6: HTTP 429 → https://mostaql.com/freelancers?verified=false&specialities=development&titles=translator&page=100
+06:05:30 WARNING src.services.network: [W0] rate-limit hit #1 -> cooldown 30s
+06:05:30 WARNING src.services.network: Retry 1/6: HTTP 429 → https://mostaql.com/freelancers?verified=false&specialities=development&titles=writer&page=50
+06:05:59 WARNING src.services.network: [W0] rate-limit hit #2 -> cooldown 60s
+06:05:59 WARNING src.services.network: Retry 2/6: HTTP 429 → https://mostaql.com/freelancers?verified=false&specialities=development&rating=1&page=21
+06:05:59 WARNING src.services.network: [W2] rate-limit hit #2 -> cooldown 60s
+06:05:59 WARNING src.services.network: Retry 2/6: HTTP 429 → https://mostaql.com/freelancers?verified=false&specialities=development&rating=2&page=38
+06:06:00 WARNING src.services.network: [W1] rate-limit hit #2 -> cooldown 60s
+06:06:00 WARNING src.services.network: Retry 2/6: HTTP 429 → https://mostaql.com/freelancers?verified=false&specialities=development&page=24
+06:06:00 WARNING src.services.network: [W2] rate-limit hit #2 -> cooldown 60s
+06:06:00 WARNING src.services.network: Retry 2/6: HTTP 429 → https://mostaql.com/freelancers?verified=false&specialities=development&titles=researcher&page=13
+06:06:00 WARNING src.services.network: [W1] rate-limit hit #2 -> cooldown 60s
+06:06:00 WARNING src.services.network: Retry 2/6: HTTP 429 → https://mostaql.com/freelancers?verified=false&specialities=development&titles=translator&page=100
+06:06:01 WARNING src.services.network: [W0] rate-limit hit #2 -> cooldown 60s
+06:06:01 WARNING src.services.network: Retry 2/6: HTTP 429 → https://mostaql.com/freelancers?verified=false&specialities=development&titles=writer&page=50
+06:07:44 WARNING src.services.network: [W2] rate-limit hit #1 -> cooldown 30s
+06:07:44 WARNING src.services.network: Retry 1/6: HTTP 429 → https://mostaql.com/freelancers?verified=false&specialities=development&rating=5&page=15
+06:07:44 WARNING src.services.network: [W2] rate-limit hit #1 -> cooldown 30s
+06:07:44 WARNING src.services.network: Retry 1/6: HTTP 429 → https://mostaql.com/freelancers?verified=false&specialities=development&titles=graphic-designer&page=48
+06:07:44 WARNING src.services.network: [W0] rate-limit hit #1 -> cooldown 30s
+06:07:44 WARNING src.services.network: Retry 1/6: HTTP 429 → https://mostaql.com/freelancers?verified=false&specialities=development&titles=web-designer&page=56
+06:07:45 WARNING src.services.network: [W1] rate-limit hit #1 -> cooldown 30s
+06:07:45 WARNING src.services.network: Retry 1/6: HTTP 429 → https://mostaql.com/freelancers?verified=false&specialities=development&titles=software-engineer&page=50
+06:07:45 WARNING src.services.network: [W1] rate-limit hit #1 -> cooldown 30s
+06:07:45 WARNING src.services.network: Retry 1/6: HTTP 429 → https://mostaql.com/freelancers?verified=false&specialities=development&rating=3&page=8
+06:07:45 WARNING src.services.network: [W0] rate-limit hit #1 -> cooldown 30s
+06:07:45 WARNING src.services.network: Retry 1/6: HTTP 429 → https://mostaql.com/freelancers?verified=false&specialities=development&rating=4&page=5
+06:15:04 WARNING src.services.network: [W2] rate-limit hit #1 -> cooldown 30s
+06:15:04 WARNING src.services.network: Retry 1/6: HTTP 429 → https://mostaql.com/freelancers?verified=false&specialities=development&page=10
+06:15:04 WARNING src.services.network: [W1] rate-limit hit #1 -> cooldown 30s
+06:15:04 WARNING src.services.network: Retry 1/6: HTTP 429 → https://mostaql.com/freelancers?verified=false&specialities=development&rating=2&page=16
+06:15:04 WARNING src.services.network: [W0] rate-limit hit #1 -> cooldown 30s
+06:15:04 WARNING src.services.network: Retry 1/6: HTTP 429 → https://mostaql.com/freelancers?verified=false&specialities=development&rating=1&page=13
+06:15:04 WARNING src.services.network: [W2] rate-limit hit #1 -> cooldown 30s
+06:15:04 WARNING src.services.network: Retry 1/6: HTTP 429 → https://mostaql.com/freelancers?verified=false&specialities=development&titles=researcher
+06:15:04 WARNING src.services.network: [W0] rate-limit hit #1 -> cooldown 30s
+06:15:04 WARNING src.services.network: Retry 1/6: HTTP 429 → https://mostaql.com/freelancers?verified=false&specialities=development&titles=pharmacist
+06:15:04 WARNING src.services.network: [W1] rate-limit hit #1 -> cooldown 30s
+06:15:04 WARNING src.services.network: Retry 1/6: HTTP 429 → https://mostaql.com/freelancers?verified=false&specialities=development&titles=writer
+06:19:29 WARNING src.services.network: [W1] rate-limit hit #1 -> cooldown 30s
+06:19:29 WARNING src.services.network: Retry 1/6: HTTP 429 → https://mostaql.com/freelancers?verified=false&specialities=development&page=19
+06:19:29 WARNING src.services.network: [W0] rate-limit hit #1 -> cooldown 30s
+06:19:29 WARNING src.services.network: Retry 1/6: HTTP 429 → https://mostaql.com/freelancers?verified=false&specialities=development&titles=researcher&page=4
+06:19:29 WARNING src.services.network: [W1] rate-limit hit #1 -> cooldown 30s
+06:19:29 WARNING src.services.network: Retry 1/6: HTTP 429 → https://mostaql.com/freelancers?verified=false&specialities=development&titles=writer&page=10
+06:19:29 WARNING src.services.network: [W2] rate-limit hit #1 -> cooldown 30s
+06:19:29 WARNING src.services.network: Retry 1/6: HTTP 429 → https://mostaql.com/freelancers?verified=false&specialities=development&titles=pharmacist&page=4
+06:19:29 WARNING src.services.network: [W0] rate-limit hit #1 -> cooldown 30s
+06:19:29 WARNING src.services.network: Retry 1/6: HTTP 429 → https://mostaql.com/freelancers?verified=false&specialities=development&rating=1&page=19
+06:19:29 WARNING src.services.network: [W2] rate-limit hit #1 -> cooldown 30s
+06:19:29 WARNING src.services.network: Retry 1/6: HTTP 429 → https://mostaql.com/freelancers?verified=false&specialities=development&rating=1&page=22
+06:19:29 WARNING src.services.network: [W2] rate-limit hit #1 -> cooldown 30s
+06:19:29 WARNING src.services.network: Retry 1/6: HTTP 429 → https://mostaql.com/freelancers?verified=false&specialities=development&page=22
+06:19:29 WARNING src.services.network: [W1] rate-limit hit #1 -> cooldown 30s
+06:19:29 WARNING src.services.network: Retry 1/6: HTTP 429 → https://mostaql.com/freelancers?verified=false&specialities=development&rating=2&page=23
+06:19:29 WARNING src.services.network: [W0] rate-limit hit #1 -> cooldown 30s
+06:19:29 WARNING src.services.network: Retry 1/6: HTTP 429 → https://mostaql.com/freelancers?verified=false&specialities=development&rating=2&page=24
+06:19:29 WARNING src.services.network: [W1] rate-limit hit #1 -> cooldown 30s
+06:19:29 WARNING src.services.network: Retry 1/6: HTTP 429 → https://mostaql.com/freelancers?verified=false&specialities=development&titles=researcher&page=2
+06:19:29 WARNING src.services.network: [W2] rate-limit hit #1 -> cooldown 30s
+06:19:29 WARNING src.services.network: Retry 1/6: HTTP 429 → https://mostaql.com/freelancers?verified=false&specialities=development&titles=writer&page=8
+06:19:29 WARNING src.services.network: [W0] rate-limit hit #1 -> cooldown 30s
+06:19:29 WARNING src.services.network: Retry 1/6: HTTP 429 → https://mostaql.com/freelancers?verified=false&specialities=development&titles=pharmacist&page=2

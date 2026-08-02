@@ -6,6 +6,7 @@ from typing import Any, Deque, Dict, List, Optional, Sequence, Set
 import logging
 import threading
 import sys
+import time
 from pathlib import Path
 import pandas as pd
 from tqdm import tqdm
@@ -158,6 +159,84 @@ class MetricsRegistry:
         write_line("")
 
 
+@dataclass
+class WorkerState:
+    """Live state of a single network worker, shown in the workers panel."""
+    stage: str
+    worker_id: int
+    status: str = "idle"
+    detail: str = ""
+    requests: int = 0
+    rate_limits: int = 0
+    cooldown_until: float = 0.0
+    since: float = field(default_factory=time.monotonic)
+
+    def set(self, status: str, detail: Optional[str] = None) -> None:
+        """Move the worker to a new state, restarting its in-state timer."""
+        if status != self.status:
+            self.status = status
+            self.since = time.monotonic()
+        if detail is not None:
+            self.detail = detail
+
+    @property
+    def cooldown_remaining(self) -> float:
+        return max(0.0, self.cooldown_until - time.monotonic())
+
+    @property
+    def elapsed(self) -> float:
+        return max(0.0, time.monotonic() - self.since)
+
+    def describe(self) -> str:
+        remaining = self.cooldown_remaining
+        if remaining > 0:
+            mm, ss = divmod(int(round(remaining)), 60)
+            return f"cooldown {mm:02d}:{ss:02d}"
+        return self.status
+
+
+class WorkerRegistry:
+    """Process-wide registry of worker states rendered by the live display."""
+
+    def __init__(self) -> None:
+        self._workers: Dict[tuple, WorkerState] = {}
+        self._lock = threading.Lock()
+
+    def get(self, stage: str, worker_id: int) -> WorkerState:
+        key = (stage, worker_id)
+        with self._lock:
+            state = self._workers.get(key)
+            if state is None:
+                state = WorkerState(stage=stage, worker_id=worker_id)
+                self._workers[key] = state
+            return state
+
+    def snapshot(self) -> List[WorkerState]:
+        """Workers in registration order, i.e. pipeline order by stage."""
+        with self._lock:
+            return list(self._workers.values())
+
+    def clear(self) -> None:
+        with self._lock:
+            self._workers.clear()
+
+
+WORKERS = WorkerRegistry()
+
+#: True while a live dashboard owns the terminal, so components that would
+#: otherwise print progress lines stay quiet and report state instead.
+_live_mode = False
+
+
+def set_live_mode(active: bool) -> None:
+    global _live_mode
+    _live_mode = active
+
+
+def is_live_mode() -> bool:
+    return _live_mode
+
+
 class RollingLogHandler(logging.Handler):
     """Keeps the last N log records so they can be shown in a live panel."""
 
@@ -242,11 +321,21 @@ class PipelineDisplay:
             TextColumn("{task.fields[rate]}"),
             TimeElapsedColumn(),
         )
-        self._live = Live(self._render(), refresh_per_second=4, transient=False)
+        # A self-rendering proxy so rich's auto-refresh re-reads live state
+        # (worker cooldowns, queue depths) instead of a frozen snapshot.
+        display = self
+
+        class _Auto:
+            def __rich__(self):
+                return display._render()
+
+        self._live = Live(_Auto(), refresh_per_second=4, transient=False)
         self._live.start()
         self._install_logging()
+        set_live_mode(True)
 
     def stop(self) -> None:
+        set_live_mode(False)
         self._remove_logging()
         if self._live is not None:
             try:
@@ -306,6 +395,9 @@ class PipelineDisplay:
         if self._progress is not None:
             self._update_rates()
             parts.append(self._progress)
+        workers = self._workers_table()
+        if workers is not None:
+            parts.append(Panel(workers, title="workers", expand=False))
         queues = self._queue_line()
         if queues:
             parts.append(Panel(queues, title="queues", expand=False))
@@ -317,6 +409,43 @@ class PipelineDisplay:
         for task in self._progress.tasks:
             speed = task.speed or 0.0
             self._progress.update(task.id, rate=f"{speed:5.1f}/s")
+
+    def _workers_table(self):
+        from rich.table import Table
+
+        states = WORKERS.snapshot()
+        if not states:
+            return None
+        table = Table(box=None, pad_edge=False, expand=False)
+        table.add_column("stage", style="bold blue")
+        table.add_column("w", justify="right")
+        table.add_column("state")
+        table.add_column("for", justify="right")
+        table.add_column("req", justify="right")
+        table.add_column("429", justify="right")
+        table.add_column("current", overflow="ellipsis", max_width=60)
+        for st in states:
+            state_text = st.describe()
+            if st.cooldown_remaining > 0:
+                style = "bold red"
+            elif st.status.startswith("retry") or st.status == "429":
+                style = "yellow"
+            elif st.status == "fetching":
+                style = "green"
+            elif st.status in ("waiting", "idle"):
+                style = "dim"
+            else:
+                style = "cyan"
+            table.add_row(
+                st.stage,
+                str(st.worker_id),
+                f"[{style}]{state_text}[/{style}]",
+                f"{int(st.elapsed)}s",
+                str(st.requests),
+                str(st.rate_limits),
+                st.detail,
+            )
+        return table
 
     def _queue_line(self) -> str:
         if not self.channels:

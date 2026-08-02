@@ -14,7 +14,7 @@ from tenacity import (
 )
 
 from ..models import ScrapeConfig
-from ..utils.reporting import PhaseMetrics
+from ..utils.reporting import WORKERS, PhaseMetrics, is_live_mode
 
 log = logging.getLogger(__name__)
 
@@ -39,6 +39,11 @@ def disable_shared_limiter() -> None:
     _shared_limiter = None
 
 
+def _short_url(url: str) -> str:
+    """Trim a URL to something that fits one dashboard row."""
+    return url.replace("https://mostaql.com/", "")
+
+
 class RetryableHTTPError(Exception):
     """HTTP response that should be retried."""
     def __init__(self, status: int, url: str, retry_after: Optional[float] = None):
@@ -50,11 +55,32 @@ class RetryableHTTPError(Exception):
 class NetworkService:
     """Handles HTTP requests with rate limiting, retries, and escalating cooldowns."""
 
-    def __init__(self, config: ScrapeConfig, worker_id: Optional[int] = None, metrics: Optional[PhaseMetrics] = None):
+    def __init__(
+        self,
+        config: ScrapeConfig,
+        worker_id: Optional[int] = None,
+        metrics: Optional[PhaseMetrics] = None,
+        rate_burst: Optional[float] = None,
+        rate_period: Optional[float] = None,
+        use_shared_limiter: bool = True,
+        stage: str = "",
+    ):
         self.config = config
         self.worker_id = worker_id
         self.metrics = metrics
-        self._limiter = _shared_limiter or AsyncLimiter(config.rate_limit_burst, config.rate_limit_period)
+        self.stage = stage or (metrics.phase_name if metrics else "") or "net"
+        # Live dashboard row for this worker (also used in non-live runs, it
+        # is simply not rendered then).
+        self.state = WORKERS.get(self.stage, worker_id if worker_id is not None else 0)
+        # A private budget (rate_burst/rate_period) always wins: the discovery
+        # phase owns a much smaller per-worker budget than the global one, and
+        # must not be folded into the process-wide bucket.
+        if rate_burst is not None and rate_period is not None:
+            self._limiter = AsyncLimiter(rate_burst, rate_period)
+        elif use_shared_limiter and _shared_limiter is not None:
+            self._limiter = _shared_limiter
+        else:
+            self._limiter = AsyncLimiter(config.rate_limit_burst, config.rate_limit_period)
         self._cooldown_until = 0.0
         self._lock = asyncio.Lock()
         self._ok_streak = 0
@@ -87,10 +113,15 @@ class NetworkService:
         now = time.monotonic()
         if now < self._cooldown_until:
             wait = self._cooldown_until - now
-            if self.worker_id is not None:
+            self.state.cooldown_until = self._cooldown_until
+            self.state.set("cooldown")
+            if self.worker_id is not None and not is_live_mode():
                 await self._live_countdown(wait)
             else:
                 await asyncio.sleep(wait)
+            self.state.cooldown_until = 0.0
+            self._ok_streak = 0
+        self.state.set("rate-limit wait")
         await self._limiter.acquire()
 
     async def _live_countdown(self, seconds: float) -> None:
@@ -122,6 +153,7 @@ class NetworkService:
                 self.metrics.increment("rate_limit_hits")
             self._ok_streak = 0
             self._consecutive_penalties += 1
+            self.state.rate_limits += 1
             
             if retry_after is not None:
                 penalty = min(retry_after, self.COOLDOWN_MAX)
@@ -150,6 +182,7 @@ class NetworkService:
         if self.metrics:
             self.metrics.increment("retries")
         exc = state.outcome.exception() if state.outcome else None
+        self.state.set(f"retry {state.attempt_number}/{self.config.max_retries}")
         log.warning("Retry %d/%d: %s", state.attempt_number, self.config.max_retries, exc)
 
     async def get(
@@ -164,10 +197,16 @@ class NetworkService:
         if self.metrics:
             self.metrics.increment("requests")
         headers = self._make_headers(ua_index)
+        self.state.requests += 1
+        self.state.set("queued", _short_url(url))
 
         async def _once() -> Tuple[int, str]:
+            # Cooldown/token waiting happens *outside* the semaphore so a
+            # penalised worker never holds a concurrency slot hostage.
+            await self._acquire_slot()
+            self.state.set("slot wait")
             async with sem:
-                await self._acquire_slot()
+                self.state.set("fetching")
                 async with session.get(
                     url,
                     headers=headers,
@@ -178,6 +217,7 @@ class NetworkService:
                             self.metrics.increment("not_found_404")
                         return 404, ""
                     if resp.status == 429:
+                        self.state.set("429")
                         ra = resp.headers.get("Retry-After")
                         retry_after = float(ra) if ra and ra.replace(".", "", 1).isdigit() else None
                         await self._penalize(retry_after)
@@ -206,9 +246,11 @@ class NetworkService:
             ):
                 with attempt:
                     status, text = await _once()
+                    self.state.set("idle")
                     return (status, text) if status != 404 else (404, None)
         except Exception as exc:
             log.error("All retries exhausted for %s: %s", url, exc)
             if self.metrics:
                 self.metrics.increment("errors")
+            self.state.set("failed")
             return 0, None
