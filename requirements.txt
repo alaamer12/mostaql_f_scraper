@@ -10,3 +10,4 @@ python-dateutil>=2.8.0
 requests>=2.31.0
 typer>=0.9.0
 rich>=13.0.0
+humanize>=4.7.0
