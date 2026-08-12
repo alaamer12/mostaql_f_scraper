@@ -133,3 +133,10 @@ Register the `followup` stage in `src/pipeline/spec.py` and expose the CLI comma
 - Update `extract` stage spec to accept `KeywordItem` as input.
 - Add `@app.command()` for `followup` in `main.py`.
 - Update `examples` command to include a followup pipeline example.
+
+### ✓ Step 4: Implement Fixup Command
+Implement a `fixup` command to correct missing titles and ranks in existing JSON files.
+
+- Add `fixup` stage to `src/pipeline/spec.py`.
+- Implement `stream_fixup` in `src/services/orchestrator.py` to identify incomplete records and re-fetch them.
+- Add `@app.command()` for `fixup` in `main.py`.

@@ -59,6 +59,15 @@ STAGE_REGISTRY: Dict[str, StageSpec] = {
         description="Extract unique names from existing data and prepare search keywords.",
         seed_note="Always seeds itself from mostaql_development_all_users.json.",
     ),
+    "fixup": StageSpec(
+        name="fixup",
+        positions=frozenset({StagePosition.START}),
+        method="stream_fixup",
+        input_type=None,
+        output_type=Freelancer,
+        description="Scan existing user files and re-fetch missing titles and ranks.",
+        seed_note="Always seeds itself from mostaql_development_all_users.json.",
+    ),
     "discovery": StageSpec(
         name="discovery",
         positions=frozenset({StagePosition.START}),

@@ -145,6 +145,126 @@ class ScraperOrchestrator:
         return results
 
     # ------------------------------------------------------------------
+    # Phase 0.5: Fixup
+    # ------------------------------------------------------------------
+    async def run_fixup(self, input_path: Optional[str] = None, use_continue: bool = True) -> List[Freelancer]:
+        """Phase 0.5: fix missing titles and ranks in existing data."""
+        return await self.stream_fixup(NullChannel(), input_path=input_path, use_continue=use_continue)
+
+    async def stream_fixup(self, out: Channel, input_path: Optional[str] = None, use_continue: bool = True) -> List[Freelancer]:
+        """Streaming form of Fixup Phase.
+        
+        Scans existing records for missing titles or ranks and re-fetches them.
+        """
+        metrics = PhaseMetrics(phase_name="Fixup")
+        start_time = time.monotonic()
+        actual_input_path = input_path or self.config.resolve_path("output_json")
+        log.info(f"Starting Fixup Phase from {actual_input_path}...")
+
+        try:
+            data = self.storage.load_json(actual_input_path)
+        except Exception as e:
+            log.error(f"Failed to load fixup input file {actual_input_path}: {e}")
+            await out.close()
+            return []
+
+        if not data:
+            log.warning(f"Fixup input file {actual_input_path} is empty or not found.")
+            await out.close()
+            return []
+
+        all_records = []
+        for item in data:
+            all_records.append(Freelancer(**item))
+
+        # Identify records needing fixup (missing title or rank)
+        to_fix = [f for f in all_records if not f.title or f.rank is None]
+        
+        log.info(f"Found {len(to_fix)} records needing fixup out of {len(all_records)} total.")
+        metrics.increment("skipped_resumed", len(all_records) - len(to_fix))
+        
+        if not to_fix:
+            log.info("No records need fixup.")
+            # Stream all anyway so downstream stages can see them if chained
+            for f in all_records:
+                await out.send(f)
+            await out.close()
+            return all_records
+
+        # To fix titles/ranks from directory pages, we can search by name or go to profile.
+        # Searching by name is faster if we want to batch, but let's do profile fetch
+        # as it's more reliable for a 'fixup' command.
+        
+        pbar = self._make_bar("Fixing Records", total=len(to_fix))
+        
+        # Dictionary for fast lookup by URL
+        results_dict = {f.profile_url: f for f in all_records}
+        
+        async with aiohttp.ClientSession() as session:
+            net = NetworkService(self.config, worker_id=0, metrics=metrics)
+            sem = asyncio.Semaphore(self.config.profile_concurrency)
+            
+            queue = asyncio.Queue()
+            for f in to_fix:
+                await queue.put(f)
+                
+            workers = [
+                asyncio.create_task(self._fixup_worker(i, session, queue, sem, results_dict, pbar, metrics, out))
+                for i in range(self.config.profile_concurrency)
+            ]
+            
+            await queue.join()
+            for w in workers:
+                w.cancel()
+
+        self._close_bar(pbar)
+        await out.close()
+
+        # Save results
+        final_results = list(results_dict.values())
+        self.exporter.export(final_results, json_path=actual_input_path, csv_path=actual_input_path.replace(".json", ".csv"))
+
+        metrics.duration_seconds = time.monotonic() - start_time
+        self.registry.register(metrics)
+        print_phase_stats("Fixup", len(to_fix), metrics.fixup_success, metrics.fixup_failed, metrics)
+        
+        return final_results
+
+    async def _fixup_worker(self, worker_id, session, queue, sem, results_dict, pbar, metrics: PhaseMetrics, out: Optional[Channel]):
+        net = NetworkService(self.config, worker_id=worker_id, metrics=metrics)
+        while True:
+            f = await queue.get()
+            try:
+                # We fetch the profile page to get title and rank
+                status, html = await net.get(session, f.profile_url, sem)
+                if html:
+                    # We can use parse_profile info or a targeted parse
+                    details = self.parser.parse_profile(html, f.profile_url)
+                    if details:
+                        # Update the freelancer object
+                        updated_f = Freelancer(
+                            name=f.name,
+                            profile_url=f.profile_url,
+                            avatar_url=f.avatar_url,
+                            title=details.title or f.title,
+                            rank=str(details.rating) if details.rating is not None else f.rank
+                        )
+                        results_dict[f.profile_url] = updated_f
+                        metrics.increment("fixup_success")
+                        if out:
+                            await out.send(updated_f)
+                    else:
+                        metrics.increment("fixup_failed")
+                else:
+                    metrics.increment("fixup_failed")
+            except Exception as e:
+                log.error(f"Fixup worker {worker_id} failed on {f.profile_url}: {e}")
+                metrics.increment("fixup_failed")
+            finally:
+                pbar.update(1)
+                queue.task_done()
+
+    # ------------------------------------------------------------------
     # Phase 1: Discovery
     # ------------------------------------------------------------------
     async def run_discovery(self, use_continue: bool = True) -> Dict[str, int]:

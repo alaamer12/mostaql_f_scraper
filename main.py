@@ -118,6 +118,35 @@ def followup(
     orch.print_session_summary()
 
 
+@app.command(epilog="Example: [green]python main.py fixup[/]")
+def fixup(
+    input_file: Optional[str] = typer.Option(
+        None,
+        "--input",
+        "-i",
+        help="Input JSON file to fix (default: mostaql_development_all_users.json).",
+    ),
+    resume: bool = typer.Option(
+        True,
+        "--continue/--no-continue",
+        help="Whether to resume or start fresh (default: enabled).",
+    ),
+):
+    """Phase 0.5 - Fixup: scan existing data and fill in missing titles/ranks.
+
+    Iterates through the provided JSON file and identifies records that
+    have null titles or missing ranks. For each such record, it re-fetches
+    the profile page and updates the database.
+
+    Examples:
+        python main.py fixup
+        python main.py fixup -i mostaql_followup_users.json
+    """
+    orch = get_orchestrator()
+    asyncio.run(orch.run_fixup(input_path=input_file, use_continue=resume))
+    orch.print_session_summary()
+
+
 @app.command(epilog="Example: [green]python main.py extract --continue[/]")
 def extract(
     output_json: Optional[str] = typer.Option(
@@ -314,6 +343,7 @@ def examples(
 
         "[bold cyan]Run each phase independently:[/]\n"
         "[green]python main.py followup[/]\n"
+        "[green]python main.py fixup[/]\n"
         "[green]python main.py discovery --new[/]\n"
         "[green]python main.py extract[/]\n"
         "[green]python main.py fetch --limit 100[/]\n"

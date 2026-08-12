@@ -70,6 +70,10 @@ class PhaseMetrics:
     portfolios_parsed: int = metric_field(overlappable=False)
     fields_missing: int = metric_field(overlappable=False)
 
+    # Phase 0.5: Fixup
+    fixup_success: int = metric_field(overlappable=False)
+    fixup_failed: int = metric_field(overlappable=False)
+
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False, compare=False)
 
     def increment(self, metric: str, count: int = 1) -> None:
@@ -605,6 +609,9 @@ def print_phase_stats(phase_name: str, total: int, success: int, failed: int, me
     if metrics.portfolios_parsed or metrics.fields_missing:
         avg_missing = metrics.fields_missing / metrics.parse_success if metrics.parse_success else 0
         write_line(f"  Portfolios parsed: {metrics.portfolios_parsed}   Fields missing: {metrics.fields_missing} (avg {avg_missing:.1f}/profile)")
+
+    if metrics.fixup_success or metrics.fixup_failed:
+        write_line(f"  Fixup     : {metrics.fixup_success} fixed, {metrics.fixup_failed} failed")
 
     if metrics.skipped_resumed:
         write_line(f"  Skipped (resumed): {metrics.skipped_resumed}")
