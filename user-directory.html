@@ -159,6 +159,7 @@
   .profile-link{font-size:12px; color:var(--muted); display:flex; align-items:center; gap:4px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
   .profile-link svg{width:11px; height:11px; flex-shrink:0;}
   mark{background:#ffe27a; color:inherit; border-radius:3px; padding:0 1px;}
+  mark.ctx{background:#bfe3cc; color:inherit; border-radius:3px; padding:0 1px;}
 
   .empty, .no-file{
     text-align:center; padding:60px 20px; color:var(--muted);
@@ -262,38 +263,133 @@
     if(u.startsWith('//')) u = 'https:' + u;
     return u;
   }
-  function highlightExact(text, query){
-    if(!query) return escapeHtml(text);
-    const idx = text.toLowerCase().indexOf(query.toLowerCase());
-    if(idx === -1) return escapeHtml(text);
-    return escapeHtml(text.slice(0,idx)) + '<mark>' + escapeHtml(text.slice(idx, idx+query.length)) + '</mark>' + escapeHtml(text.slice(idx+query.length));
+  // ---------- Arabic-aware normalization ----------
+  // Handles: tashkeel/tatweel removal, alef/ya/ta-marbuta unification, NFC, latin lowercasing.
+  // Returns normalized string + a map from each normalized-char index back to its
+  // original-string index, so match positions can be translated back for highlighting.
+  const DIACRITIC_RE = /[\u064B-\u065F\u0670\u06D6-\u06ED]/;
+  function normalizeText(text){
+    text = String(text).normalize('NFC');
+    let out = '';
+    const origIndex = [];
+    for(let i = 0; i < text.length; i++){
+      const ch = text[i];
+      const code = ch.codePointAt(0);
+      if(DIACRITIC_RE.test(ch) || code === 0x0640) continue; // drop diacritics/tatweel
+      let nch;
+      if(code===0x0622||code===0x0623||code===0x0625||code===0x0671) nch = 'ا'; // alef variants
+      else if(code===0x0649) nch = 'ي';                                        // alef maksura -> ya
+      else if(code===0x0629) nch = 'ه';                                        // ta marbuta -> ha
+      else nch = ch.toLowerCase();
+      out += nch;
+      origIndex.push(i);
+    }
+    return {norm: out, origIndex};
   }
 
-  // fast fuzzy subsequence scorer — avoid toLowerCase() on every haystack repeatedly by precomputing
-  function fuzzyScore(needleLower, haystackLower){
-    if(!needleLower) return 0;
-    const idx = haystackLower.indexOf(needleLower);
-    if(idx !== -1) return 1000 - idx;
-    let ni = 0, score = 0, gapPenalty = 0;
-    for(let hi = 0; hi < haystackLower.length && ni < needleLower.length; hi++){
-      if(haystackLower[hi] === needleLower[ni]){ score += 10; ni++; }
+  // common Arabic prefixes/suffixes recognized as "context" around a literal match
+  const AR_PREFIXES = ['وال','بال','كال','فال','لل','ال','و','ف','ب','ك','ل'];
+  const AR_SUFFIXES = ['ها','هم','هن','كم','كن','ية','ات','ون','ين','ان','ه'];
+
+  function wordBoundsAround(str, start, end){
+    let ws = start;
+    while(ws > 0 && str[ws-1] !== ' ') ws--;
+    let we = end;
+    while(we < str.length && str[we] !== ' ') we++;
+    return {ws, we};
+  }
+
+  // Find the best subsequence match, returning matched haystack positions (not
+  // necessarily contiguous) plus a score for ranking. Used for fuzzy mode.
+  function fuzzySubsequence(needle, haystack){
+    if(!needle) return null;
+    let ni = 0, gapPenalty = 0;
+    const positions = [];
+    for(let hi = 0; hi < haystack.length && ni < needle.length; hi++){
+      if(haystack[hi] === needle[ni]){ positions.push(hi); ni++; }
       else if(ni > 0){ gapPenalty++; }
     }
-    if(ni < needleLower.length) return -1;
-    return score - gapPenalty;
+    if(ni < needle.length) return null;
+    const score = needle.length*10 - gapPenalty;
+    return {positions, score};
+  }
+
+  // Core search primitive: given a user (with precomputed .norm/.origIndex) and a
+  // normalized query, returns null (no match) or a highlight/ranking descriptor.
+  function findMatch(user, queryNorm, exact){
+    if(!queryNorm) return {score:0, origStart:-1, origEnd:-1, yellowOrig:null};
+    const hay = user.norm;
+    let start, end, yellowPositions, score;
+
+    const idx = hay.indexOf(queryNorm);
+    if(idx !== -1){
+      // contiguous literal match — best case, works for prefix cases like "شركة" in "الشركة"
+      start = idx; end = idx + queryNorm.length;
+      yellowPositions = [];
+      for(let i = start; i < end; i++) yellowPositions.push(i);
+      score = 1000 - idx;
+    } else {
+      if(exact) return null;
+      const fz = fuzzySubsequence(queryNorm, hay);
+      if(!fz) return null;
+      yellowPositions = fz.positions;
+      start = fz.positions[0];
+      end = fz.positions[fz.positions.length-1] + 1;
+      score = fz.score;
+    }
+
+    // extend the highlighted span to include a recognized Arabic prefix/suffix
+    // sitting right next to the literal match — shown as "context" (green)
+    const {ws, we} = wordBoundsAround(hay, start, end);
+    const before = hay.slice(ws, start);
+    const after = hay.slice(end, we);
+    let spanStart = start, spanEnd = end;
+    if(AR_PREFIXES.includes(before)) spanStart = ws;
+    if(AR_SUFFIXES.includes(after)) spanEnd = we;
+
+    const origIndex = user.origIndex;
+    const origStart = origIndex[spanStart];
+    const origEnd = spanEnd < origIndex.length ? origIndex[spanEnd] : user.name.length;
+    const yellowOrig = new Set(yellowPositions.map(p => origIndex[p]));
+
+    return {score, origStart, origEnd, yellowOrig};
+  }
+
+  // Renders `text` with the literal typed characters marked yellow and any
+  // surrounding recognized affix / fuzzy-gap context marked green.
+  function renderHighlighted(text, matchInfo){
+    if(!matchInfo || matchInfo.origStart < 0) return escapeHtml(text);
+    const {origStart, origEnd, yellowOrig} = matchInfo;
+    let out = escapeHtml(text.slice(0, origStart));
+    let i = origStart;
+    while(i < origEnd){
+      const isYellow = yellowOrig.has(i);
+      let j = i;
+      while(j < origEnd && yellowOrig.has(j) === isYellow) j++;
+      const chunk = escapeHtml(text.slice(i, j));
+      out += isYellow ? ('<mark>' + chunk + '</mark>') : ('<mark class="ctx">' + chunk + '</mark>');
+      i = j;
+    }
+    out += escapeHtml(text.slice(origEnd));
+    return out;
   }
 
   // ---------- data prep ----------
   // Precompute lowercase name once per user at load time (avoids repeated toLowerCase on every keystroke)
   function prepareUsers(arr){
-    return arr.map(u => ({
-      name: u.name || '',
-      nameLower: (u.name || '').toLowerCase(),
-      profile_url: u.profile_url || '',
-      avatar_url: u.avatar_url || '',
-      title: u.title || '',
-      rank: u.rank || ''
-    }));
+    return arr.map(u => {
+      const name = u.name || '';
+      const {norm, origIndex} = normalizeText(name);
+      return {
+        name,
+        norm,
+        origIndex,
+        profile_url: u.profile_url || '',
+        avatar_url: u.avatar_url || '',
+        title: u.title || '',
+        rank: u.rank || ''
+      };
+    });
   }
 
   // ---------- layout ----------
@@ -340,7 +436,7 @@
     };
   }
 
-  function fillCard(cardEl, user, query, exact){
+  function fillCard(cardEl, user, matchInfo){
     cardEl.href = user.profile_url || '#';
     cardEl.dataset.filled = '1';
 
@@ -357,10 +453,11 @@
     }
 
     const nameEl = cardEl.querySelector('.name');
-    if(query && exact){
-      nameEl.innerHTML = highlightExact(user.name || 'Unnamed user', query);
+    const displayName = user.name || 'Unnamed user';
+    if(matchInfo && matchInfo.origStart >= 0){
+      nameEl.innerHTML = renderHighlighted(displayName, matchInfo);
     } else {
-      nameEl.textContent = user.name || 'Unnamed user';
+      nameEl.textContent = displayName;
     }
 
     const titleEl = cardEl.querySelector('.title');
@@ -441,9 +538,6 @@
       }
     }
 
-    const query = searchInput.value.trim();
-    const exact = exactToggle.checked;
-
     for(const rowIdx of neededRows){
       let rowEl = cardPool.get(rowIdx);
       if(!rowEl){
@@ -458,7 +552,7 @@
         const cardEl = cardEls[c];
         if(itemIdx < filtered.length){
           cardEl.style.visibility = 'visible';
-          fillCard(cardEl, filtered[itemIdx].user, query, exact);
+          fillCard(cardEl, filtered[itemIdx].user, filtered[itemIdx].matchInfo);
         } else {
           cardEl.style.visibility = 'hidden';
         }
@@ -475,22 +569,16 @@
   function runSearch(){
     const query = searchInput.value.trim();
     const exact = exactToggle.checked;
-    const queryLower = query.toLowerCase();
 
     if(!query){
-      filtered = allUsers.map(u => ({user:u, score:0}));
-    } else if(exact){
-      filtered = [];
-      for(let i=0;i<allUsers.length;i++){
-        const u = allUsers[i];
-        if(u.nameLower.includes(queryLower)) filtered.push({user:u, score:0});
-      }
+      filtered = allUsers.map(u => ({user:u, score:0, matchInfo:null}));
     } else {
+      const queryNorm = normalizeText(query).norm;
       filtered = [];
       for(let i=0;i<allUsers.length;i++){
         const u = allUsers[i];
-        const score = fuzzyScore(queryLower, u.nameLower);
-        if(score >= 0) filtered.push({user:u, score});
+        const matchInfo = findMatch(u, queryNorm, exact);
+        if(matchInfo) filtered.push({user:u, score:matchInfo.score, matchInfo});
       }
       filtered.sort((a,b) => b.score - a.score);
     }
