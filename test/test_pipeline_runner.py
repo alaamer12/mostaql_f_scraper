@@ -137,3 +137,17 @@ def test_options_are_translated_into_stage_kwargs():
     coro = runner._build_stage_coroutine(stage, None, None)
     assert coro.cr_frame.f_locals["use_continue"] is False
     coro.close()
+
+
+def test_environment_detection_and_plain_mode():
+    from src.utils.reporting import is_colab_or_notebook, is_interactive_tty, PipelineDisplay
+
+    # Detection functions return booleans without throwing exceptions
+    assert isinstance(is_colab_or_notebook(), bool)
+    assert isinstance(is_interactive_tty(), bool)
+
+    display = PipelineDisplay(["stage1"])
+    display.start()
+    # In non-interactive test runner, display._available should be False
+    assert display._available is False
+    display.stop()

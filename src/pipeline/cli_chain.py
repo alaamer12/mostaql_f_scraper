@@ -145,7 +145,9 @@ def validate_chain(stages: List[ParsedStage]) -> None:
                 f"'{downstream.name}' does not consume anything, so it cannot follow "
                 f"'{upstream.name}' (allowed positions: {downstream.spec.positions_label()})."
             )
-        if produced is not consumed:
+        if consumed is Any:
+            pass
+        elif produced is not consumed:
             produced_name = getattr(produced, "__name__", str(produced))
             consumed_name = getattr(consumed, "__name__", str(consumed))
             raise ChainError(

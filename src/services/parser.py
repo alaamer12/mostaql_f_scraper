@@ -71,16 +71,39 @@ class ParsingService:
             avatar_img = row.select_one("td.info-td img[src]")
             avatar_url = avatar_img["src"] if avatar_img else None
             
-            title_el = row.select_one("p.freelancer-title")
-            title = title_el.get_text(strip=True) if title_el else None
+            # Title extraction - refined
+            title = None
+            title_icon = row.select_one("i.fa-briefcase")
+            if title_icon and title_icon.parent:
+                title = title_icon.parent.get_text(strip=True)
+            
+            # If not found, try the old selector just in case
+            if not title:
+                title_el = row.select_one("p.freelancer-title")
+                title = title_el.get_text(strip=True) if title_el else None
+            
+            # Rank extraction
+            rating_el = row.select_one(".freelancers__item-rating")
+            rank_val = self._extract_rating_from_stars(rating_el)
+            rank = str(rank_val) if rank_val is not None else None
             
             freelancers.append(Freelancer(
                 name=name,
                 profile_url=href,
                 avatar_url=avatar_url,
-                title=title
+                title=title,
+                rank=rank
             ))
         return freelancers
+
+    def _extract_rating_from_stars(self, el: Optional[Tag]) -> Optional[float]:
+        """Calculate 0-5 rating by counting star icons."""
+        if not el:
+            return None
+        # Mostaql uses fa-star for full and fa-star-half-o for half stars
+        full_stars = len(el.select("i.fa-star"))
+        half_stars = len(el.select("i.fa-star-half-o"))
+        return float(full_stars + (half_stars * 0.5))
 
     def parse_profile(self, html: str, url: str, portfolio_html: Optional[str] = None) -> Optional[ProfileDetails]:
         """Parse a detailed profile page."""
@@ -168,11 +191,10 @@ class ParsingService:
             if field_name:
                 results[field_name] = value
         
-        # Rating parsing
+        # Rating parsing - using the same star counting logic
         rating_el = soup.select_one(".rating-stars")
         if rating_el:
-            # Heuristic for rating
-            pass
+            results["rating"] = self._extract_rating_from_stars(rating_el)
             
         return results
 

@@ -21,7 +21,7 @@ Usage
 from __future__ import annotations
 
 import argparse
-import json
+import orjson
 import re
 import sys
 from collections import Counter, defaultdict
@@ -64,8 +64,7 @@ def load_records() -> list[dict]:
     if not JSON_PATH.exists():
         print(f"ERROR: {JSON_PATH} not found", file=sys.stderr)
         sys.exit(1)
-    with JSON_PATH.open(encoding="utf-8") as f:
-        return json.load(f)
+    return orjson.loads(JSON_PATH.read_bytes())
 
 
 def classify_record(rec: dict) -> str:

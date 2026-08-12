@@ -10,6 +10,8 @@ from rich.panel import Panel
 from src.models import ScrapeConfig
 from src.services.orchestrator import ScraperOrchestrator
 from src.pipeline import cli_chain
+from src.utils.logging_utils import setup_logging
+from src.utils.reporting import is_interactive_tty
 
 app = typer.Typer(
     name="mostaql-scraper",
@@ -34,6 +36,7 @@ console = Console()
 
 
 def get_orchestrator() -> ScraperOrchestrator:
+    setup_logging()
     config = ScrapeConfig()
     return ScraperOrchestrator(config)
 
@@ -71,8 +74,63 @@ def discovery(
     orch.print_session_summary()
 
 
+@app.command(epilog="Example: [green]python main.py followup[/]")
+def followup(
+    input_file: Optional[str] = typer.Option(
+        None,
+        "--input",
+        "-i",
+        help="Input JSON file containing existing user records (default: mostaql_development_all_users.json).",
+    ),
+    output_json: Optional[str] = typer.Option(
+        None,
+        "--output-json",
+        "-o",
+        help="Output JSON file for newly discovered freelancers (default: mostaql_followup_users.json).",
+    ),
+    output_csv: Optional[str] = typer.Option(
+        None,
+        "--output-csv",
+        help="Output CSV file for newly discovered freelancers (default: mostaql_followup_users.csv).",
+    ),
+    resume: bool = typer.Option(
+        True,
+        "--continue/--no-continue",
+        help="Resume by reading unique names from existing output_json file (default: enabled).",
+    ),
+):
+    """Phase 0 - Followup: extract names from existing data to find more users.
+
+    Reads names from the existing freelancer database, extracts the first
+    word of each name, and performs a search on Mostaql to discover new
+    freelancers that share those names.
+
+    Outputs new users to a separate file (default: mostaql_followup_users.json)
+    without overwriting the original input file.
+
+    Examples:
+        python main.py followup
+        python main.py followup --pipelined extract
+        python main.py followup -o followup_custom.json --pipelined extract
+    """
+    orch = get_orchestrator()
+    asyncio.run(orch.run_followup(input_path=input_file, use_continue=resume))
+    orch.print_session_summary()
+
+
 @app.command(epilog="Example: [green]python main.py extract --continue[/]")
 def extract(
+    output_json: Optional[str] = typer.Option(
+        None,
+        "--output-json",
+        "-o",
+        help="Custom output JSON file path for extracted freelancers.",
+    ),
+    output_csv: Optional[str] = typer.Option(
+        None,
+        "--output-csv",
+        help="Custom output CSV file path for extracted freelancers.",
+    ),
     new: bool = typer.Option(
         False, "--new", help="Ignore any previously extracted output and start the freelancer URL list from empty."
     ),
@@ -89,7 +147,7 @@ def extract(
     as both JSON and CSV for downstream phases.
 
     Pipelined positions: start, middle, end. In start position it seeds
-    from pagination_cache.json (``--new``/``--continue`` apply to the
+    from pagination_cache.json (--new/--continue apply to the
     existing URL list); otherwise it consumes combos streamed by discovery.
 
     Examples:
@@ -98,7 +156,7 @@ def extract(
         python main.py discovery --pipelined extract --pipelined fetch
     """
     orch = get_orchestrator()
-    asyncio.run(orch.run_extraction(use_continue=resume and not new))
+    asyncio.run(orch.run_extraction(use_continue=resume and not new, output_json=output_json, output_csv=output_csv))
     orch.print_session_summary()
 
 
@@ -255,6 +313,7 @@ def examples(
         "[green]python main.py scrape --deep[/]\n\n"
 
         "[bold cyan]Run each phase independently:[/]\n"
+        "[green]python main.py followup[/]\n"
         "[green]python main.py discovery --new[/]\n"
         "[green]python main.py extract[/]\n"
         "[green]python main.py fetch --limit 100[/]\n"
@@ -264,6 +323,7 @@ def examples(
         "[green]python main.py deep-scrape --limit 100 --continue[/]\n\n"
 
         "[bold cyan]Pipelined (all stages stream concurrently):[/]\n"
+        "[green]python main.py followup --pipelined extract --pipelined fetch --pipelined parse[/]\n"
         "[green]python main.py discovery --pipelined extract --pipelined fetch --pipelined parse[/]\n"
         "[green]python main.py extract --pipelined fetch[/]\n"
         "[green]python main.py fetch --limit 500 --pipelined parse[/]\n"
@@ -374,14 +434,26 @@ def main() -> None:
 
     from src.pipeline.runner import PipelineRunner
 
+    plain_requested = False
+    clean_argv = []
+    for arg in argv:
+        if arg in ("--plain", "--no-live"):
+            plain_requested = True
+        else:
+            clean_argv.append(arg)
+
     try:
-        stages = cli_chain.parse_chain(argv, app)
+        stages = cli_chain.parse_chain(clean_argv, app)
     except cli_chain.ChainError as exc:
         console.print(f"[bold red]Invalid pipeline:[/] {exc}")
         sys.exit(2)
 
+    use_live = is_interactive_tty() and not plain_requested
+    if not use_live:
+        console.print("[dim]Using plain progress mode (Colab/notebook/non-TTY or --plain detected).[/]")
+
     console.print(f"[bold blue]Pipelined run:[/] {cli_chain.format_chain(stages)}")
-    runner = PipelineRunner(get_orchestrator(), stages, live_display=True)
+    runner = PipelineRunner(get_orchestrator(), stages, live_display=use_live)
     sys.exit(runner.run())
 
 

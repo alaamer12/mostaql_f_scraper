@@ -9,7 +9,7 @@ import sys
 import time
 from pathlib import Path
 import pandas as pd
-from tqdm import tqdm
+from tqdm.auto import tqdm
 
 
 def metric_field(default=0, overlappable: bool = True):
@@ -221,6 +221,34 @@ class WorkerRegistry:
             self._workers.clear()
 
 
+def is_colab_or_notebook() -> bool:
+    """Detect if running inside Google Colab, Jupyter Notebook, or a non-TTY environment."""
+    if "google.colab" in sys.modules:
+        return True
+    try:
+        import google.colab  # type: ignore # noqa: F401
+        return True
+    except ImportError:
+        pass
+    try:
+        from IPython import get_ipython  # type: ignore
+        ip = get_ipython()
+        if ip is not None:
+            cfg = getattr(ip, "config", {})
+            if "IPKernelApp" in cfg or "ZMQInteractiveShell" in getattr(ip, "__class__", {}).__name__:
+                return True
+    except Exception:
+        pass
+    return False
+
+
+def is_interactive_tty() -> bool:
+    """Check if standard output and error support interactive Rich live updates."""
+    if is_colab_or_notebook():
+        return False
+    return sys.stdout.isatty() and sys.stderr.isatty()
+
+
 WORKERS = WorkerRegistry()
 
 #: True while a live dashboard owns the terminal, so components that would
@@ -303,6 +331,10 @@ class PipelineDisplay:
 
     # -- lifecycle -----------------------------------------------------
     def start(self) -> None:
+        if not is_interactive_tty():
+            self._available = False
+            return
+
         try:
             from rich.live import Live
             from rich.progress import (
@@ -459,6 +491,13 @@ class PipelineDisplay:
         formatter = logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s", "%H:%M:%S")
         self._rolling.setFormatter(formatter)
         root = logging.getLogger()
+
+        self._muted_stream_handlers = []
+        for handler in list(root.handlers):
+            if isinstance(handler, logging.StreamHandler) and not isinstance(handler, logging.FileHandler):
+                root.removeHandler(handler)
+                self._muted_stream_handlers.append(handler)
+
         root.addHandler(self._rolling)
         try:
             self._file_handler = logging.FileHandler(self.log_path, encoding="utf-8")
@@ -475,6 +514,10 @@ class PipelineDisplay:
         if self._file_handler is not None:
             self._file_handler.close()
             self._file_handler = None
+        for handler in getattr(self, "_muted_stream_handlers", []):
+            if handler not in root.handlers:
+                root.addHandler(handler)
+        self._muted_stream_handlers = []
 
 
 def configure_stdout() -> None:

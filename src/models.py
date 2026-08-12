@@ -41,6 +41,12 @@ class PageCountItem:
     last_page: int
 
 @dataclass(frozen=True)
+class KeywordItem:
+    """Milestone emitted by the followup stage for one search keyword."""
+    keyword: str
+    combo: Dict[str, Any]
+
+@dataclass(frozen=True)
 class RawProfileRecord:
     """Milestone emitted by the fetch stage: raw, unparsed profile HTML."""
     profile_url: str
@@ -72,8 +78,12 @@ class ScrapeConfig:
     profiles_json: str = "mostaql_development_profiles.json"
     profiles_csv: str = "mostaql_development_profiles.csv"
     raw_html_json: str = "mostaql_raw_html_cache.jsonl"
+    followup_input: str = "mostaql_development_all_users.json"
+    followup_output_json: str = "mostaql_followup_users.json"
+    followup_output_csv: str = "mostaql_followup_users.csv"
 
     # Checkpoints
+    checkpoint_flush_every: int = 10
     checkpoint_json: str = "checkpoint.json"
     checkpoint_profiles_json: str = "checkpoint_profiles.jsonl"
     checkpoint_fetch_json: str = "checkpoint_fetch.jsonl"

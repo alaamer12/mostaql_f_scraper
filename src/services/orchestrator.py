@@ -3,12 +3,13 @@ import logging
 import time
 from typing import Any, Callable, List, Optional, Set, Dict
 from dataclasses import asdict
-from tqdm import tqdm
+from tqdm.auto import tqdm
 import aiohttp
 
 from ..models import (
     Freelancer,
     PageCountItem,
+    KeywordItem,
     ProfileDetails,
     RawProfileRecord,
     ScrapeConfig,
@@ -45,10 +46,6 @@ class ScraperOrchestrator:
     in the current session so a combined report can be printed at the end.
     """
 
-    #: How often (in solved combos) the pagination cache is flushed to disk
-    #: while discovery is still running, so a pipelined run stays resumable.
-    CACHE_FLUSH_EVERY = 25
-
     def __init__(self, config: ScrapeConfig):
         self.config = config
         self.storage = StorageService()
@@ -72,9 +69,7 @@ class ScraperOrchestrator:
     def _bump_total(bar, delta: int = 1) -> None:
         """Grow a bar's total as more work is discovered upstream."""
         bar.total = (bar.total or 0) + delta
-        refresh = getattr(bar, "refresh", None)
-        if refresh is not None:
-            refresh()
+        # Do not call refresh() here to avoid excessive line printing in some envs
 
     def _header(self, max_pages, concurrency: int, rate: str) -> None:
         """Print the banner, unless a live dashboard already owns the screen."""
@@ -87,6 +82,67 @@ class ScraperOrchestrator:
         close = getattr(bar, "close", None)
         if close is not None:
             close()
+
+    # ------------------------------------------------------------------
+    # Phase 0: Followup
+    # ------------------------------------------------------------------
+    async def run_followup(self, input_path: Optional[str] = None, use_continue: bool = True) -> List[KeywordItem]:
+        """Phase 0: extract unique first names from existing data."""
+        return await self.stream_followup(NullChannel(), input_path=input_path, use_continue=use_continue)
+
+    async def stream_followup(self, out: Channel, input_path: Optional[str] = None, use_continue: bool = True) -> List[KeywordItem]:
+        """Streaming form of Phase 0.
+
+        Reads unique first words from the input JSON file and streams
+        them as KeywordItem milestones for downstream extraction.
+        """
+        metrics = PhaseMetrics(phase_name="Followup")
+        start_time = time.monotonic()
+        actual_input_path = input_path or self.config.resolve_path("followup_input")
+        log.info(f"Starting Followup Phase from {actual_input_path}...")
+
+        try:
+            data = self.storage.load_json(actual_input_path)
+        except Exception as e:
+            log.error(f"Failed to load followup input file {actual_input_path}: {e}")
+            await out.close()
+            return []
+
+        if not data:
+            log.warning(f"Followup input file {actual_input_path} is empty or not found.")
+            await out.close()
+            return []
+
+        unique_names = set()
+        for item in data:
+            name = item.get("name")
+            if name and isinstance(name, str):
+                first_word = name.strip().split()[0]
+                if first_word:
+                    unique_names.add(first_word)
+
+        log.info(f"Extracted {len(unique_names)} unique names for followup.")
+        metrics.increment("urls_discovered", len(unique_names)) # Using urls_discovered as a proxy for keywords
+
+        results = []
+        pbar = self._make_bar("Preparing Followup", total=len(unique_names))
+        
+        # We wrap each name in a KeywordItem. 
+        # The 'combo' here is a virtual one that 'extract' knows how to use.
+        for name in sorted(list(unique_names)):
+            item = KeywordItem(keyword=name, combo={"dim": "followup", "value": name, "params": {}})
+            results.append(item)
+            await out.send(item)
+            pbar.update(1)
+
+        self._close_bar(pbar)
+        await out.close()
+
+        metrics.duration_seconds = time.monotonic() - start_time
+        self.registry.register(metrics)
+        print_phase_stats("Followup", len(unique_names), len(unique_names), 0, metrics)
+        
+        return results
 
     # ------------------------------------------------------------------
     # Phase 1: Discovery
@@ -213,7 +269,7 @@ class ScraperOrchestrator:
                 pbar.update(1)
                 if out is not None and last_page > 0:
                     await out.send(PageCountItem(label=label, combo=combo, last_page=last_page))
-                if cache_path and metrics.combos_processed % self.CACHE_FLUSH_EVERY == 0:
+                if cache_path and metrics.combos_processed % self.config.checkpoint_flush_every == 0:
                     await self.storage.asave_json(dict(page_counts), cache_path)
             except Exception as e:
                 log.error(f"Discovery worker {worker_id} failed on combo {combo}: {e}")
@@ -247,6 +303,69 @@ class ScraperOrchestrator:
             return False
         freelancers = self.parser.parse_directory(html)
         return len(freelancers) > 0
+
+    async def _followup_worker(self, worker_id, session, queue, sem, storage_dict, pbar, metrics: PhaseMetrics,
+                               out: Optional[Channel] = None, target_output_json: Optional[str] = None,
+                               target_output_csv: Optional[str] = None, suppression_urls: Optional[Set[str]] = None):
+        """Specialized worker for keyword-based extraction (followup)."""
+        net = NetworkService(self.config, worker_id=worker_id, metrics=metrics)
+        processed_items = 0
+        while True:
+            net.state.set("waiting for keyword", "")
+            keyword_item = await queue.get()
+            try:
+                keyword = keyword_item.keyword
+                combo = keyword_item.combo
+                net.state.set("searching", keyword)
+                
+                # For followup, we don't know the last_page, so we scrape until 
+                # we hit an empty page or reach max_pages.
+                page = 1
+                while True:
+                    if self.config.max_pages != -1 and page > self.config.max_pages:
+                        break
+                        
+                    virtual_combo = dict(combo)
+                    virtual_combo["keyword"] = keyword
+                    url = self.combo_manager.get_url(virtual_combo, page)
+                    
+                    _, html = await net.get(session, url, sem)
+                    metrics.increment("pages_scraped")
+                    
+                    if not html:
+                        break
+                        
+                    freelancers = self.parser.parse_directory(html)
+                    if not freelancers:
+                        break
+                        
+                    for f in freelancers:
+                        if suppression_urls and f.profile_url in suppression_urls:
+                            metrics.increment("duplicate_urls_skipped")
+                            continue
+
+                        if f.profile_url not in storage_dict:
+                            storage_dict[f.profile_url] = f
+                            metrics.increment("urls_discovered")
+                            if f.name == "Unknown":
+                                metrics.increment("unknown_names")
+                            if out is not None:
+                                await out.send(f)
+                        else:
+                            metrics.increment("duplicate_urls_skipped")
+                    
+                    page += 1
+                    
+                pbar.update(1)
+                processed_items += 1
+                if target_output_json and processed_items % self.config.checkpoint_flush_every == 0:
+                    records = list(storage_dict.values())
+                    self.exporter.export(records, json_path=target_output_json, csv_path=target_output_csv)
+            except Exception as e:
+                log.error(f"Followup worker {worker_id} failed on {keyword_item}: {e}")
+            finally:
+                net.state.set("idle", "")
+                queue.task_done()
 
     # ------------------------------------------------------------------
     # Sample: quick smoke test (no checkpoints, no cache writes)
@@ -325,26 +444,44 @@ class ScraperOrchestrator:
     # ------------------------------------------------------------------
     # Phase 2: URL Extraction
     # ------------------------------------------------------------------
-    async def run_extraction(self, use_continue: bool = True) -> List[Freelancer]:
+    async def run_extraction(self, use_continue: bool = True,
+                             output_json: Optional[str] = None,
+                             output_csv: Optional[str] = None) -> List[Freelancer]:
         """Phase 2: scrape listing pages (using the pagination cache from Phase 1)
         to collect unique freelancer name/URL records.
         """
-        return await self.stream_extraction(None, NullChannel(), use_continue=use_continue)
+        return await self.stream_extraction(None, NullChannel(), use_continue=use_continue,
+                                            output_json=output_json, output_csv=output_csv)
 
     async def stream_extraction(self, inp: Optional[Channel], out: Channel,
-                                use_continue: bool = True) -> List[Freelancer]:
+                                use_continue: bool = True,
+                                output_json: Optional[str] = None,
+                                output_csv: Optional[str] = None) -> List[Freelancer]:
         """Streaming form of Phase 2.
 
         With ``inp is None`` the stage seeds itself from the pagination
         cache exactly like :meth:`run_extraction`; otherwise it consumes
-        ``PageCountItem`` milestones as the upstream discovery stage
+        ``PageCountItem`` or ``KeywordItem`` milestones as the upstream stage
         produces them. Every newly discovered unique freelancer is
         forwarded on ``out`` immediately.
         """
         metrics = PhaseMetrics(phase_name="URL Extraction")
         start_time = time.monotonic()
-        self._header("From Cache", self.config.dir_concurrency, f"{self.config.rate_limit_burst}/{self.config.rate_limit_period}s")
-        log.info("Starting URL Extraction Phase...")
+        
+        # Detect mode based on input type if streaming
+        mode_desc = "From Cache"
+        if inp is not None:
+            mode_desc = "Streaming"
+            
+        self._header(mode_desc, self.config.dir_concurrency, f"{self.config.rate_limit_burst}/{self.config.rate_limit_period}s")
+        log.info(f"Starting URL Extraction Phase ({mode_desc})...")
+
+        is_followup_channel = inp is not None and "followup" in getattr(inp, "name", "")
+        default_json = self.config.resolve_path("followup_output_json") if is_followup_channel else self.config.resolve_path("output_json")
+        default_csv = self.config.resolve_path("followup_output_csv") if is_followup_channel else self.config.resolve_path("output_csv")
+
+        target_output_json = output_json or default_json
+        target_output_csv = output_csv or default_csv
 
         combos_by_label = {self.combo_manager.get_label(c): c for c in self.combo_manager.get_combinations()}
         page_counts: Dict[str, int] = {}
@@ -356,14 +493,27 @@ class ScraperOrchestrator:
                 return []
 
         all_freelancers: Dict[str, Freelancer] = {}
+        suppression_urls: Set[str] = set()
+
+        if is_followup_channel:
+            # In followup mode, we want to skip users already in the input file
+            input_path = self.config.resolve_path("followup_input")
+            log.info(f"Loading suppression list from {input_path}...")
+            input_data = self.storage.load_json(input_path)
+            if input_data:
+                for item in input_data:
+                    url = item.get("profile_url")
+                    if url:
+                        suppression_urls.add(url)
+                log.info(f"Loaded {len(suppression_urls)} URLs to skip in followup.")
 
         if use_continue:
-            existing = self.storage.load_json(self.config.resolve_path("output_json"))
+            existing = self.storage.load_json(target_output_json)
             if existing:
                 for item in existing:
                     f = Freelancer(**item)
                     all_freelancers[f.profile_url] = f
-                log.info(f"Loaded {len(all_freelancers)} existing freelancers.")
+                log.info(f"Loaded {len(all_freelancers)} existing freelancers from {target_output_json}.")
                 metrics.increment("skipped_resumed", len(all_freelancers))
                 # Already-known freelancers are milestones for the downstream
                 # stage too; it de-duplicates against its own checkpoint.
@@ -381,18 +531,47 @@ class ScraperOrchestrator:
 
         try:
             async with aiohttp.ClientSession() as session:
-                workers = [
-                    asyncio.create_task(
-                        self._extraction_worker(i, session, queue, sem, all_freelancers, pbar, metrics, out)
-                    )
-                    for i in range(self.config.dir_concurrency)
-                ]
+                workers = []
+                
+                # Check if we are in followup mode (KeywordItem)
+                is_followup_mode = False
+                
                 if inp is not None:
+                    # We need to wait for the first item to know the worker type, 
+                    # OR we can peek if the channel allows. 
+                    # Since we don't know yet, we'll start workers lazily or 
+                    # use a generic worker that handles both.
+                    # Given the differences, let's wait for the first item.
+                    
                     async for item in inp:
-                        if item.last_page <= 0:
-                            continue
-                        self._bump_total(pbar)
-                        await queue.put((item.combo, item.last_page))
+                        if isinstance(item, PageCountItem):
+                            if not workers:
+                                workers = [
+                                    asyncio.create_task(self._extraction_worker(i, session, queue, sem, all_freelancers, pbar, metrics, out, target_output_json=target_output_json, target_output_csv=target_output_csv, suppression_urls=suppression_urls))
+                                    for i in range(self.config.dir_concurrency)
+                                ]
+                            if item.last_page <= 0:
+                                continue
+                            self._bump_total(pbar)
+                            await queue.put((item.combo, item.last_page))
+                        elif isinstance(item, KeywordItem):
+                            is_followup_mode = True
+                            if not workers:
+                                workers = [
+                                    asyncio.create_task(self._followup_worker(i, session, queue, sem, all_freelancers, pbar, metrics, out, target_output_json=target_output_json, target_output_csv=target_output_csv, suppression_urls=suppression_urls))
+                                    for i in range(self.config.dir_concurrency)
+                                ]
+                            self._bump_total(pbar)
+                            await queue.put(item)
+                else:
+                    # Default cache-based discovery extraction
+                    workers = [
+                        asyncio.create_task(
+                            self._extraction_worker(i, session, queue, sem, all_freelancers, pbar, metrics, out, target_output_json=target_output_json, target_output_csv=target_output_csv, suppression_urls=suppression_urls)
+                        )
+                        for i in range(self.config.dir_concurrency)
+                    ]
+                
                 await queue.join()
                 for w in workers:
                     w.cancel()
@@ -401,21 +580,27 @@ class ScraperOrchestrator:
             await out.close()
 
         result = list(all_freelancers.values())
-        self.exporter.export(result, json_path=self.config.resolve_path("output_json"), csv_path=self.config.resolve_path("output_csv"))
+        if output_json is None and is_followup_mode:
+            target_output_json = self.config.resolve_path("followup_output_json")
+            target_output_csv = self.config.resolve_path("followup_output_csv")
+
+        self.exporter.export(result, json_path=target_output_json, csv_path=target_output_csv)
 
         success = len([f for f in result if f.name != "Unknown"])
         metrics.unknown_names = len(result) - success
         metrics.duration_seconds = time.monotonic() - start_time
         self.registry.register(metrics)
         print_phase_stats("URL Extraction", len(result), success, len(result) - success, metrics)
-        print_completion_paths(self.config.resolve_path("output_json"), self.config.resolve_path("output_csv"), len(result))
+        print_completion_paths(target_output_json, target_output_csv, len(result))
 
         log.info(f"URL Extraction complete. Found {len(result)} unique freelancers.")
         return result
 
     async def _extraction_worker(self, worker_id, session, queue, sem, storage_dict, pbar, metrics: PhaseMetrics,
-                                 out: Optional[Channel] = None):
+                                 out: Optional[Channel] = None, target_output_json: Optional[str] = None,
+                                 target_output_csv: Optional[str] = None, suppression_urls: Optional[Set[str]] = None):
         net = NetworkService(self.config, worker_id=worker_id, metrics=metrics)
+        processed_items = 0
         while True:
             net.state.set("waiting for combo", "")
             combo, last_page = await queue.get()
@@ -427,6 +612,10 @@ class ScraperOrchestrator:
                     metrics.increment("pages_scraped")
                     if html:
                         for f in self.parser.parse_directory(html):
+                            if suppression_urls and f.profile_url in suppression_urls:
+                                metrics.increment("duplicate_urls_skipped")
+                                continue
+
                             if f.profile_url not in storage_dict:
                                 storage_dict[f.profile_url] = f
                                 metrics.increment("urls_discovered")
@@ -437,6 +626,10 @@ class ScraperOrchestrator:
                             else:
                                 metrics.increment("duplicate_urls_skipped")
                 pbar.update(1)
+                processed_items += 1
+                if target_output_json and processed_items % self.config.checkpoint_flush_every == 0:
+                    records = list(storage_dict.values())
+                    self.exporter.export(records, json_path=target_output_json, csv_path=target_output_csv)
             except Exception as e:
                 log.error(f"Extraction worker {worker_id} failed on combo {combo}: {e}")
             finally:

@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Dict, FrozenSet, Optional, Type
 
-from ..models import Freelancer, PageCountItem, ProfileDetails, RawProfileRecord
+from ..models import Freelancer, PageCountItem, KeywordItem, ProfileDetails, RawProfileRecord
 
 
 class StagePosition(str, Enum):
@@ -50,6 +50,15 @@ class StageSpec:
 
 
 STAGE_REGISTRY: Dict[str, StageSpec] = {
+    "followup": StageSpec(
+        name="followup",
+        positions=frozenset({StagePosition.START}),
+        method="stream_followup",
+        input_type=None,
+        output_type=KeywordItem,
+        description="Extract unique names from existing data and prepare search keywords.",
+        seed_note="Always seeds itself from mostaql_development_all_users.json.",
+    ),
     "discovery": StageSpec(
         name="discovery",
         positions=frozenset({StagePosition.START}),
@@ -65,7 +74,7 @@ STAGE_REGISTRY: Dict[str, StageSpec] = {
         name="extract",
         positions=frozenset({StagePosition.START, StagePosition.MIDDLE, StagePosition.END}),
         method="stream_extraction",
-        input_type=PageCountItem,
+        input_type=Any,  # Supports PageCountItem or KeywordItem
         output_type=Freelancer,
         concurrency_attr="dir_concurrency",
         start_only_options=frozenset(),

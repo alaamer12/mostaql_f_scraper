@@ -117,6 +117,12 @@ class PipelineRunner:
             kwargs["use_continue"] = bool(resume) and not bool(new)
         if "limit" in params:
             kwargs["limit"] = options.get("limit")
+        if "output_json" in params:
+            kwargs["output_json"] = options.get("output_json")
+        if "output_csv" in params:
+            kwargs["output_csv"] = options.get("output_csv")
+        if "input_path" in params:
+            kwargs["input_path"] = options.get("input_file") or options.get("input_path")
         return method(**kwargs)
 
     # -- live display --------------------------------------------------

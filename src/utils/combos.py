@@ -78,7 +78,9 @@ class ComboManager:
     def get_url(self, combo: Dict[str, Any], page: int = 1) -> str:
         """Construct the URL for a specific combination and page."""
         params = dict(self.FIXED_PARAMS)
-        params.update(combo["params"])
+        params.update(combo.get("params", {}))
+        if "keyword" in combo:
+            params["keyword"] = combo["keyword"]
         if page > 1:
             params["page"] = str(page)
         return self.base_url + "?" + urlparse.urlencode(params)

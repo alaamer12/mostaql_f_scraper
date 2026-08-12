@@ -6,7 +6,8 @@
 =============================================================================
 """
 
-import json
+import orjson
+from pathlib import Path
 import pandas as pd
 import numpy as np
 import plotly.express as px
@@ -26,8 +27,11 @@ DATA_FILE = "mostaql_development_profiles.json"
 
 def load_data(filepath: str = DATA_FILE) -> pd.DataFrame:
     """Load JSON dataset and reconstruct correct types."""
-    with open(filepath, "r", encoding="utf-8") as f:
-        raw = json.load(f)
+    path = Path(filepath)
+    if not path.exists():
+        return pd.DataFrame()
+        
+    raw = orjson.loads(path.read_bytes())
 
     df = pd.DataFrame(raw)
 
@@ -47,7 +51,7 @@ def load_data(filepath: str = DATA_FILE) -> pd.DataFrame:
     if "skills" in df.columns:
         df["skills"] = df["skills"].apply(
             lambda x: x if isinstance(x, list)
-            else (json.loads(x) if isinstance(x, str) and x.startswith("[") else [])
+            else (orjson.loads(x) if isinstance(x, str) and x.startswith("[") else [])
         )
 
     # Sort by success_score

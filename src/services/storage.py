@@ -1,6 +1,6 @@
 import asyncio
-import json
 import csv
+import orjson
 from pathlib import Path
 from typing import List, Dict, Any, Union, Optional
 from dataclasses import asdict
@@ -40,26 +40,28 @@ class StorageService:
             self.save_jsonl(records, path, append=append)
 
     def save_json(self, data: Any, path: Union[str, Path]) -> None:
-        """Save data to a JSON file."""
+        """Save data to a JSON file using orjson for performance."""
         path = Path(path)
-        with path.open("w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
+        # orjson.dumps returns bytes. we use OPT_INDENT_2 to match previous behavior
+        # but OPT_NON_STR_KEYS is also useful if we ever have non-string keys
+        # ensure_ascii=False is default in orjson
+        content = orjson.dumps(data, option=orjson.OPT_INDENT_2 | orjson.OPT_NON_STR_KEYS)
+        path.write_bytes(content)
 
     def load_json(self, path: Union[str, Path]) -> Any:
-        """Load data from a JSON file."""
+        """Load data from a JSON file using orjson."""
         path = Path(path)
         if not path.exists():
             return None
-        with path.open("r", encoding="utf-8") as f:
-            return json.load(f)
+        return orjson.loads(path.read_bytes())
 
     def save_jsonl(self, records: List[Dict[str, Any]], path: Union[str, Path], append: bool = True) -> None:
         """Save/Append records to a JSONL file (good for checkpoints)."""
         path = Path(path)
-        mode = "a" if append else "w"
-        with path.open(mode, encoding="utf-8") as f:
+        mode = "ab" if append else "wb"
+        with path.open(mode) as f:
             for rec in records:
-                f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+                f.write(orjson.dumps(rec) + b"\n")
 
     def load_jsonl(self, path: Union[str, Path]) -> List[Dict[str, Any]]:
         """Load records from a JSONL file."""
@@ -67,10 +69,10 @@ class StorageService:
         if not path.exists():
             return []
         records = []
-        with path.open("r", encoding="utf-8") as f:
+        with path.open("rb") as f:
             for line in f:
                 if line.strip():
-                    records.append(json.loads(line))
+                    records.append(orjson.loads(line))
         return records
 
     def save_csv(self, records: List[Dict[str, Any]], path: Union[str, Path]) -> None:
@@ -85,7 +87,7 @@ class StorageService:
             row = dict(rec)
             for k, v in row.items():
                 if isinstance(v, (list, dict)):
-                    row[k] = json.dumps(v, ensure_ascii=False)
+                    row[k] = orjson.dumps(v).decode("utf-8")
             flattened.append(row)
 
         df = pd.DataFrame(flattened)
