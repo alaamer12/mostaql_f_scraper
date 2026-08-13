@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import random
 import time
 import sys
 from typing import Optional, Tuple
@@ -158,10 +159,15 @@ class NetworkService:
             if retry_after is not None:
                 penalty = min(retry_after, self.COOLDOWN_MAX)
             else:
-                penalty = min(
+                # Add per-worker jitter so workers that got rate-limited by the
+                # same upstream burst don't all cool down for the exact same
+                # duration and come back online in lockstep (which otherwise
+                # makes the overall progress look frozen for the whole window).
+                base = min(
                     self.COOLDOWN_START * (2 ** (self._consecutive_penalties - 1)),
                     self.COOLDOWN_MAX,
                 )
+                penalty = min(base * random.uniform(0.85, 1.15), self.COOLDOWN_MAX)
             
             until = time.monotonic() + penalty
             self._cooldown_until = max(self._cooldown_until, until)
