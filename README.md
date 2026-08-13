@@ -89,7 +89,7 @@ This project is ready for 24/7 operation on Railway:
 ### Project Architecture
 The project is organized into a clean `src/` directory:
 - `templates/`: Jinja2 + MUI CSS templates for the web UI (`base.html`, `index.html`, `command.html`).
-- `uploads/`: Runtime directory for files uploaded via the `followup`/`fixup` drag & drop pages.
+- `outsourcing/`: Runtime directory; each run/upload gets its own `outsourcing/<uuid>/{uploads,downloads,logs}/` sandbox (uploaded files, generated output files, and that run's log file all share the same uuid).
 - `src/main_api.py`: FastAPI server, per-command page routes, JSON API, and background task management.
 - `src/services/`:
   - `orchestrator.py`: Pipeline coordination and worker management for all 4 phases.

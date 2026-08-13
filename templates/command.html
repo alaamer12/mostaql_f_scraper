@@ -15,6 +15,7 @@
                 <input type="file" id="file-input" accept=".json" style="display:none;">
             </div>
             <input type="hidden" id="uploaded_path" name="{{ cmd.file_field }}" value="">
+            <input type="hidden" id="upload_run_id" name="upload_run_id" value="">
             <div id="upload-status" style="font-size:12px; color:#4caf50; margin-top:4px;"></div>
         </div>
         {% endif %}
@@ -117,6 +118,7 @@ async function uploadFile(file) {
         const resp = await fetch('/api/upload', { method: 'POST', body: formData });
         const data = await resp.json();
         document.getElementById('uploaded_path').value = data.path;
+        document.getElementById('upload_run_id').value = data.run_id || '';
         document.getElementById('upload-status').innerText = 'Uploaded: ' + data.name;
     } catch (e) {
         document.getElementById('upload-status').innerText = 'Upload failed: ' + e;

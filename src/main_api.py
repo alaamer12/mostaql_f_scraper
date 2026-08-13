@@ -29,8 +29,19 @@ for _stream in (sys.stdout, sys.stderr):
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TEMPLATES_DIR = os.path.join(BASE_DIR, "templates")
-UPLOADS_DIR = os.path.join(BASE_DIR, "uploads")
-os.makedirs(UPLOADS_DIR, exist_ok=True)
+
+# Every uuid-scoped run (whether started by an upload or a scrape command)
+# gets its own sandboxed outsourcing/<uuid>/{uploads,downloads,logs} folder,
+# so uploaded input files, generated output files and the run's log file
+# all live together under one identifier.
+OUTSOURCE_DIR = os.path.join(BASE_DIR, "outsourcing")
+os.makedirs(OUTSOURCE_DIR, exist_ok=True)
+
+
+def _outsource_subdir(run_id: str, subdir: str) -> str:
+    path = os.path.join(OUTSOURCE_DIR, run_id, subdir)
+    os.makedirs(path, exist_ok=True)
+    return path
 
 # ----------------------------------------------------------------------
 # Logging: keep the last 50 lines in memory so the web UI can show them.
@@ -59,6 +70,21 @@ _buffer_handler.setFormatter(logging.Formatter("%(asctime)s - %(levelname)s - %(
 logging.getLogger().addHandler(_buffer_handler)
 
 log = logging.getLogger("mostaql_api")
+
+
+def _attach_run_log_handler(run_id: str) -> logging.FileHandler:
+    """Attach a per-run log file at outsourcing/<run_id>/logs/<run_id>.log,
+    named after the same uuid used for that run's downloads/uploads."""
+    logs_dir = _outsource_subdir(run_id, "logs")
+    handler = logging.FileHandler(os.path.join(logs_dir, f"{run_id}.log"))
+    handler.setFormatter(logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s"))
+    logging.getLogger().addHandler(handler)
+    return handler
+
+
+def _detach_run_log_handler(handler: logging.FileHandler) -> None:
+    logging.getLogger().removeHandler(handler)
+    handler.close()
 
 app = FastAPI(
     title="Mostaql Scraper API",
@@ -202,9 +228,12 @@ CURRENT_TASK: Optional["asyncio.Task"] = None
 async def run_scraper_task(command: str, **kwargs) -> None:
     """Internal helper to run scraper commands in background."""
     global scrape_status, CURRENT_TASK
-    run_id = str(uuid.uuid4())
-    run_dir = os.path.join(BASE_DIR, "downloads", run_id)
-    os.makedirs(run_dir, exist_ok=True)
+    # Reuse the uuid generated at upload time (if the UI forwarded one), so
+    # an uploaded input file and this run's downloads/logs share one folder:
+    # outsourcing/<uuid>/{uploads,downloads,logs}.
+    run_id = kwargs.get("run_id") or str(uuid.uuid4())
+    run_dir = _outsource_subdir(run_id, "downloads")
+    run_log_handler = _attach_run_log_handler(run_id)
 
     scrape_status.is_running = True
     scrape_status.current_command = command
@@ -335,6 +364,7 @@ async def run_scraper_task(command: str, **kwargs) -> None:
         scrape_status.is_running = False
         scrape_status.current_command = None
         CURRENT_TASK = None
+        _detach_run_log_handler(run_log_handler)
 
 
 # ----------------------------------------------------------------------
@@ -631,6 +661,11 @@ async def run_command(slug: str, request: Request):
         input_file = payload.get(cmd["file_field"])
         if input_file:
             kwargs["input_file"] = input_file
+    # If the input file was uploaded, reuse its uuid so this run's
+    # outsourcing/<uuid>/{downloads,logs} share the folder with the
+    # outsourcing/<uuid>/uploads/ file that was just used.
+    if payload.get("upload_run_id"):
+        kwargs["run_id"] = str(payload["upload_run_id"]).strip()
 
     CURRENT_TASK = asyncio.create_task(run_scraper_task(slug, **kwargs))
     return {"message": f"Started {cmd['title']} in background.", "config": kwargs}
@@ -709,7 +744,13 @@ async def upload_file(file: UploadFile = File(...)):
     content_hash = hashlib.sha256(content).hexdigest()
     original_name = os.path.basename(file.filename)
     safe_name = f"{content_hash}_{original_name}"
-    dest_path = os.path.join(UPLOADS_DIR, safe_name)
+
+    # Every upload gets its own uuid-scoped outsourcing/<uuid>/uploads/
+    # folder; the frontend forwards this uuid back to /api/run/{slug} so
+    # the eventual run's downloads/logs land in that same outsourcing/<uuid>/.
+    run_id = str(uuid.uuid4())
+    upload_dir = _outsource_subdir(run_id, "uploads")
+    dest_path = os.path.join(upload_dir, safe_name)
 
     if os.path.exists(dest_path):
         log.info(f"Upload matches existing file by hash, reusing {dest_path}")
@@ -718,7 +759,7 @@ async def upload_file(file: UploadFile = File(...)):
             f.write(content)
         log.info(f"Uploaded file saved to {dest_path}")
 
-    return {"name": file.filename, "path": dest_path, "hash": content_hash}
+    return {"name": file.filename, "path": dest_path, "hash": content_hash, "run_id": run_id}
 
 
 @app.get("/api/results")
@@ -732,12 +773,13 @@ async def list_results():
         for f in scrape_status.current_output_files:
             abs_p = os.path.abspath(f)
             exists = os.path.exists(abs_p)
-            rel_to_downloads = os.path.relpath(abs_p, os.path.join(BASE_DIR, "downloads"))
+            run_downloads_dir = _outsource_subdir(scrape_status.current_run_id, "downloads")
+            rel_to_downloads = os.path.relpath(abs_p, run_downloads_dir)
             available_files.append({
                 "name": os.path.basename(abs_p),
                 "display_name": rel_to_downloads.replace(os.sep, "/"),
                 "path": abs_p,
-                "download_url": f"/results/download/{rel_to_downloads.replace(os.sep, '/')}",
+                "download_url": f"/results/download/{scrape_status.current_run_id}/{rel_to_downloads.replace(os.sep, '/')}",
                 "size": os.path.getsize(abs_p) if exists else 0,
                 "modified": os.path.getmtime(abs_p) if exists else 0,
                 "exists": exists,
@@ -755,12 +797,13 @@ async def list_results():
             if not exists:
                 continue # Only show historical files if they actually exist
 
-            rel_to_downloads = os.path.relpath(abs_p, os.path.join(BASE_DIR, "downloads"))
+            run_downloads_dir = _outsource_subdir(run["run_id"], "downloads")
+            rel_to_downloads = os.path.relpath(abs_p, run_downloads_dir)
             available_files.append({
                 "name": os.path.basename(abs_p),
                 "display_name": rel_to_downloads.replace(os.sep, "/"),
                 "path": abs_p,
-                "download_url": f"/results/download/{rel_to_downloads.replace(os.sep, '/')}",
+                "download_url": f"/results/download/{run['run_id']}/{rel_to_downloads.replace(os.sep, '/')}",
                 "size": os.path.getsize(abs_p),
                 "modified": os.path.getmtime(abs_p),
                 "exists": True,
@@ -816,10 +859,11 @@ async def download_legacy_result(filename: str):
 @app.get("/results/download/{run_id}/{filename:path}")
 async def download_result(run_id: str, filename: str):
     """Download a specific result file from a unique run directory."""
-    full_path = os.path.abspath(os.path.join(BASE_DIR, "downloads", run_id, filename))
-    
-    # Security check: ensure path is inside downloads directory
-    if not full_path.startswith(os.path.abspath(os.path.join(BASE_DIR, "downloads"))):
+    run_downloads_dir = os.path.abspath(os.path.join(OUTSOURCE_DIR, run_id, "downloads"))
+    full_path = os.path.abspath(os.path.join(run_downloads_dir, filename))
+
+    # Security check: ensure path is inside this run's downloads directory
+    if not full_path.startswith(run_downloads_dir):
         raise HTTPException(status_code=403, detail="Access denied.")
 
     if os.path.exists(full_path) and os.path.isfile(full_path):
