@@ -1,6 +1,8 @@
 from dataclasses import dataclass, field
 from typing import List, Optional, Dict, Any
 from datetime import datetime
+from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic import Field
 from .utils.formatting import TimeFormatter
 
 @dataclass(frozen=True)
@@ -53,17 +55,27 @@ class RawProfileRecord:
     html: Optional[str] = None
     portfolio_html: Optional[str] = None
 
-@dataclass
-class ScrapeConfig:
-    """Global configuration for the scraping pipeline."""
+class ScrapeConfig(BaseSettings):
+    """Global configuration for the scraping pipeline.
+    
+    Can be overridden via environment variables or a .env file.
+    Example: MOSTAQL_MAX_PAGES=10
+    """
+    model_config = SettingsConfigDict(
+        env_prefix="MOSTAQL_",
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore"
+    )
+
     base_url: str = "https://mostaql.com/freelancers"
     max_pages: int = -1
     profile_concurrency: int = 10
     dir_concurrency: int = 3
     rate_limit_burst: int = 6
     rate_limit_period: float = 2.0
+    
     # Discovery uses its own, deliberately gentler per-worker budget
-    # (the pre-refactor brute-force script used 2 requests / 2.5s per worker).
     discovery_rate_burst: int = 2
     discovery_rate_period: float = 2.5
     max_retries: int = 6
@@ -93,11 +105,11 @@ class ScrapeConfig:
     binary_search_initial: int = 100
     min_confidence: int = 2
 
-    user_agents: List[str] = field(default_factory=lambda: [
+    user_agents: List[str] = [
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
         "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-    ])
+    ]
 
     def resolve_path(self, attr_name: str) -> str:
         """Resolves a file path attribute with dynamic placeholders."""

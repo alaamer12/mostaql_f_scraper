@@ -50,7 +50,7 @@ class RetryableHTTPError(Exception):
         self.status = status
         self.url = url
         self.retry_after = retry_after
-        super().__init__(f"HTTP {status} → {url}")
+        super().__init__(f"HTTP {status} -> {url}")
 
 class NetworkService:
     """Handles HTTP requests with rate limiting, retries, and escalating cooldowns."""

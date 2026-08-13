@@ -1,0 +1,492 @@
+{% extends "base.html" %}
+{% block title %}{{ cmd.title }} - Mostaql Scraper{% endblock %}
+{% block content %}
+<h1>{{ cmd.title }}</h1>
+<p>{{ cmd.description }}</p>
+
+<div class="mui-panel">
+    <h3>1. Inputs</h3>
+    <form id="run-form">
+        {% if cmd.needs_file %}
+        <div class="mui-form-group">
+            <label>Input file ({{ cmd.file_field }})</label>
+            <div id="drop-zone">
+                Drag &amp; drop a JSON file here, or click to browse
+                <input type="file" id="file-input" accept=".json" style="display:none;">
+            </div>
+            <input type="hidden" id="uploaded_path" name="{{ cmd.file_field }}" value="">
+            <div id="upload-status" style="font-size:12px; color:#4caf50; margin-top:4px;"></div>
+        </div>
+        {% endif %}
+
+        {% for field in cmd.fields %}
+        <div class="mui-form-group">
+            {% if field.type == 'checkbox' %}
+            <label>
+                <input type="checkbox" name="{{ field.name }}" {% if field.default %}checked{% endif %}>
+                {{ field.label }}
+            </label>
+            {% else %}
+            <label>{{ field.label }}</label>
+            <input class="mui-textfield" type="{{ field.type }}" name="{{ field.name }}"
+                   value="{{ field.default if field.default is not none else '' }}"
+                   placeholder="{{ field.placeholder or '' }}">
+            {% endif %}
+        </div>
+        {% endfor %}
+
+        <button type="submit" class="mui-btn mui-btn--raised mui-btn--primary" id="start-btn">Start {{ cmd.title }}</button>
+    </form>
+    <div id="run-message" style="margin-top:8px; font-size:13px;"></div>
+</div>
+
+<div class="mui-panel">
+    <h3>2. Process</h3>
+    <div id="progress-desc" class="progress-desc">&nbsp;</div>
+    <div class="progress-row">
+        <div class="progress-outer">
+            <div class="progress-inner" id="progress-bar" style="width:0%;"></div>
+        </div>
+        <div class="progress-label" id="progress-label">0%</div>
+    </div>
+    <div id="sub-progress-container"></div>
+    <div style="display:flex; align-items:center; justify-content:space-between; gap:10px;">
+        <div id="process-status" style="font-size:13px; color:#555;">idle</div>
+        <button type="button" id="stop-btn" class="mui-btn mui-btn--raised mui-btn--danger" style="display:none;">Stop</button>
+    </div>
+</div>
+
+<div class="mui-panel">
+    <h3>2b. Workers <small>(live rate-limit / cooldown status per worker)</small></h3>
+    <div id="workers-accordion"><div class="worker-empty">No active workers yet.</div></div>
+</div>
+
+<div class="mui-panel">
+    <h3>3. Log (last 50 lines)</h3>
+    <pre id="log-box"></pre>
+</div>
+
+<div class="mui-panel">
+    <h3>4. Output <small>(available even before the process finishes)</small></h3>
+    <div id="output-section">No files yet.</div>
+    <div id="overwrite-warning" class="warning-banner"></div>
+</div>
+
+<div class="mui-panel">
+    <h3>5. Report <small>(reactive, keeps updating)</small></h3>
+    <div class="report-tabs">
+        <button type="button" class="report-tab-btn active" data-tab="grid">Grid</button>
+        <button type="button" class="report-tab-btn" data-tab="raw">Raw</button>
+    </div>
+    <div id="report-tab-grid" class="report-tab-panel active">
+        <div id="report-grid" class="report-empty">Waiting for data...</div>
+    </div>
+    <div id="report-tab-raw" class="report-tab-panel">
+        <div class="raw-json-wrapper">
+            <button type="button" id="copy-raw-btn" class="copy-btn">Copy</button>
+            <pre id="report-raw">Waiting for data...</pre>
+        </div>
+    </div>
+</div>
+
+<script>
+const SLUG = "{{ cmd.slug }}";
+
+// --- Drag & drop / explorer upload ---
+const dropZone = document.getElementById('drop-zone');
+const fileInput = document.getElementById('file-input');
+if (dropZone) {
+    dropZone.addEventListener('click', () => fileInput.click());
+    dropZone.addEventListener('dragover', (e) => { e.preventDefault(); dropZone.classList.add('dragover'); });
+    dropZone.addEventListener('dragleave', () => dropZone.classList.remove('dragover'));
+    dropZone.addEventListener('drop', (e) => {
+        e.preventDefault();
+        dropZone.classList.remove('dragover');
+        if (e.dataTransfer.files.length) uploadFile(e.dataTransfer.files[0]);
+    });
+    fileInput.addEventListener('change', () => {
+        if (fileInput.files.length) uploadFile(fileInput.files[0]);
+    });
+}
+
+async function uploadFile(file) {
+    const formData = new FormData();
+    formData.append('file', file);
+    document.getElementById('upload-status').innerText = 'Uploading...';
+    try {
+        const resp = await fetch('/api/upload', { method: 'POST', body: formData });
+        const data = await resp.json();
+        document.getElementById('uploaded_path').value = data.path;
+        document.getElementById('upload-status').innerText = 'Uploaded: ' + data.name;
+    } catch (e) {
+        document.getElementById('upload-status').innerText = 'Upload failed: ' + e;
+    }
+}
+
+// --- Start run ---
+function collectPayload(form) {
+    const payload = {};
+    new FormData(form).forEach((value, key) => { payload[key] = value; });
+    // Checkboxes not checked won't appear in FormData; normalize booleans
+    form.querySelectorAll('input[type=checkbox]').forEach((cb) => { payload[cb.name] = cb.checked; });
+    return payload;
+}
+
+async function checkOverwrite(payload) {
+    try {
+        const resp = await fetch('/api/check-overwrite/' + SLUG, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        });
+        return await resp.json();
+    } catch (e) {
+        return { will_overwrite: false, files: [] };
+    }
+}
+
+function renderOverwriteWarning(result) {
+    const box = document.getElementById('overwrite-warning');
+    if (result && result.will_overwrite && result.files.length) {
+        box.classList.add('show');
+        box.innerHTML = '&#9888; Starting this command will overwrite ' + result.files.length +
+            ' existing file(s): <br>' + result.files.map((f) => '&bull; ' + f.path).join('<br>');
+    } else {
+        box.classList.remove('show');
+        box.innerHTML = '';
+    }
+}
+
+document.getElementById('run-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const form = e.target;
+    const payload = collectPayload(form);
+
+    const msg = document.getElementById('run-message');
+    const overwriteResult = await checkOverwrite(payload);
+    renderOverwriteWarning(overwriteResult);
+
+    if (overwriteResult.will_overwrite) {
+        const fileList = overwriteResult.files.map((f) => f.path).join('\n');
+        const proceed = window.confirm(
+            'This will overwrite the following existing file(s):\n\n' + fileList +
+            '\n\nDo you want to continue?'
+        );
+        if (!proceed) {
+            msg.style.color = '#8a6d00';
+            msg.innerText = 'Cancelled: existing file(s) were not overwritten.';
+            return;
+        }
+    }
+
+    try {
+        const resp = await fetch('/api/run/' + SLUG, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        });
+        const data = await resp.json();
+        if (!resp.ok) {
+            msg.style.color = '#f44336';
+            msg.innerText = data.detail || 'Failed to start.';
+        } else {
+            msg.style.color = '#4caf50';
+            msg.innerText = data.message;
+        }
+    } catch (err) {
+        msg.style.color = '#f44336';
+        msg.innerText = 'Error: ' + err;
+    }
+});
+
+// Live-refresh the warning banner whenever inputs change, so users see it before clicking Start too.
+document.getElementById('run-form').addEventListener('change', async (e) => {
+    const payload = collectPayload(document.getElementById('run-form'));
+    const result = await checkOverwrite(payload);
+    renderOverwriteWarning(result);
+});
+
+// --- Reactive polling: process/progress ---
+function escapeHtml(str) {
+    return String(str).replace(/[&<>"']/g, (c) => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+    }[c]));
+}
+
+function formatCellValue(value) {
+    if (value === null || value === undefined) {
+        return '<span class="report-val-null">null</span>';
+    }
+    if (typeof value === 'number') {
+        return '<span class="report-val-number">' + escapeHtml(value) + '</span>';
+    }
+    if (typeof value === 'boolean') {
+        return '<span class="report-val-bool-' + value + '">' + value + '</span>';
+    }
+    if (typeof value === 'object') {
+        return '<span class="report-val-object">' + escapeHtml(JSON.stringify(value, null, 2)) + '</span>';
+    }
+    return escapeHtml(value);
+}
+
+function renderReportGrid(data) {
+    const container = document.getElementById('report-grid');
+    if (!data || typeof data !== 'object' || Object.keys(data).length === 0) {
+        container.className = 'report-empty';
+        container.innerText = 'No report data yet.';
+        return;
+    }
+    container.className = '';
+    let html = '<table class="report-grid-table"><tbody>';
+    for (const [key, value] of Object.entries(data)) {
+        html += '<tr><th>' + escapeHtml(key) + '</th><td>' + formatCellValue(value) + '</td></tr>';
+    }
+    html += '</tbody></table>';
+    container.innerHTML = html;
+}
+
+// --- Report tabs ---
+document.querySelectorAll('.report-tab-btn').forEach((btn) => {
+    btn.addEventListener('click', () => {
+        document.querySelectorAll('.report-tab-btn').forEach((b) => b.classList.remove('active'));
+        document.querySelectorAll('.report-tab-panel').forEach((p) => p.classList.remove('active'));
+        btn.classList.add('active');
+        document.getElementById('report-tab-' + btn.dataset.tab).classList.add('active');
+    });
+});
+
+document.getElementById('copy-raw-btn').addEventListener('click', async () => {
+    const btn = document.getElementById('copy-raw-btn');
+    const text = document.getElementById('report-raw').innerText;
+    try {
+        await navigator.clipboard.writeText(text);
+    } catch (e) {
+        const ta = document.createElement('textarea');
+        ta.value = text;
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand('copy');
+        document.body.removeChild(ta);
+    }
+    const original = btn.innerText;
+    btn.innerText = 'Copied!';
+    btn.classList.add('copied');
+    setTimeout(() => { btn.innerText = original; btn.classList.remove('copied'); }, 1200);
+});
+
+// --- Debugging -------------------------------------------------------
+// On by default so progress problems are visible in the browser console.
+// Disable with ?debug=0 in the URL (or DBG.off() from the console).
+const DEBUG = new URLSearchParams(location.search).get('debug') !== '0';
+let POLL_SEQ = 0;
+let LAST_PROGRESS_JSON = null;
+function dbg(...args) { if (DEBUG) console.log('%c[PROGRESS-DEBUG]', 'color:#2196f3;font-weight:bold', ...args); }
+function dbgWarn(...args) { if (DEBUG) console.warn('[PROGRESS-DEBUG]', ...args); }
+window.DBG = {
+    off() { location.search = '?debug=0'; },
+    async dump() { const r = await fetch('/api/debug/progress'); const d = await r.json(); console.log('[PROGRESS-DEBUG] /api/debug/progress', d); return d; },
+};
+dbg('debug logging enabled for slug=' + SLUG + '. Call DBG.dump() for the raw backend bar state.');
+
+async function pollStats() {
+    const seq = ++POLL_SEQ;
+    try {
+        const resp = await fetch('/api/stats');
+        const data = await resp.json();
+        const p = data.progress || {};
+        dbg('poll #' + seq + ' /api/stats progress =', JSON.parse(JSON.stringify(p)));
+        if (p.debug) {
+            dbg('poll #' + seq + ' backend live bars (' + p.debug.active_bar_count + '):', p.debug.bars);
+        }
+        const progressJson = JSON.stringify({ desc: p.desc, n: p.n, total: p.total });
+        if (LAST_PROGRESS_JSON !== null && progressJson === LAST_PROGRESS_JSON) {
+            dbgWarn('poll #' + seq + ' progress UNCHANGED since last poll ->', progressJson);
+        }
+        LAST_PROGRESS_JSON = progressJson;
+        const pctExact = (p.total && p.total > 0) ? Math.min(100, (p.n / p.total) * 100) : (p.n ? 100 : 0);
+        // With huge totals (e.g. 5841 keywords) a whole-number percentage sits
+        // on "0%" for a very long time and looks frozen, so show decimals.
+        const pct = pctExact >= 10 ? pctExact.toFixed(0) : pctExact.toFixed(2);
+        const status = data.task_status || {};
+        const isRunning = !!status.is_running;
+
+        const bar = document.getElementById('progress-bar');
+        const label = document.getElementById('progress-label');
+        const descEl = document.getElementById('progress-desc');
+        bar.style.width = Math.max(pctExact, isRunning ? 1.5 : 0) + '%';
+        bar.classList.toggle('running', isRunning);
+        bar.classList.toggle('idle-bar', !isRunning && pctExact === 0);
+        label.innerText = pct + '%';
+        descEl.innerText = p.desc ? (p.desc + ' (' + (p.n || 0) + (p.total ? ' / ' + p.total : '') + ')') : '\u00a0';
+        dbg('poll #' + seq + ' bar rendered: pct=' + pct + '% width=' + bar.style.width +
+            ' desc=' + JSON.stringify(descEl.innerText) + ' isRunning=' + isRunning +
+            ' subBars=' + ((p.sub_bars || []).length));
+
+        const sub = document.getElementById('sub-progress-container');
+        sub.innerHTML = '';
+        (p.sub_bars || []).forEach((sb) => {
+            const spct = (sb.total && sb.total > 0) ? Math.min(100, Math.round((sb.n / sb.total) * 100)) : 0;
+            const row = document.createElement('div');
+            row.className = 'progress-sub-row';
+            const desc = document.createElement('div');
+            desc.className = 'progress-desc';
+            desc.innerText = sb.desc + ' (' + (sb.n || 0) + (sb.total ? ' / ' + sb.total : '') + ')';
+            const line = document.createElement('div');
+            line.className = 'progress-row';
+            const outer = document.createElement('div');
+            outer.className = 'progress-outer';
+            const inner = document.createElement('div');
+            inner.className = 'progress-inner running';
+            inner.style.width = spct + '%';
+            const subLabel = document.createElement('div');
+            subLabel.className = 'progress-label';
+            subLabel.innerText = spct + '%';
+            outer.appendChild(inner);
+            line.appendChild(outer);
+            line.appendChild(subLabel);
+            row.appendChild(desc);
+            row.appendChild(line);
+            sub.appendChild(row);
+        });
+
+        let statusText = isRunning ? ('running: ' + (status.current_command || SLUG)) :
+            (status.error ? ('error: ' + status.error) : 'idle');
+        // The bar can legitimately stop advancing for a while when every
+        // worker is sitting in a rate-limit cooldown (no page fetch can
+        // complete yet) - surface that instead of leaving it looking frozen.
+        if (isRunning && p.workers_in_cooldown > 0 && p.workers_in_cooldown >= p.workers_total) {
+            statusText += ' - waiting on rate-limit cooldown (' + formatMMSS(p.max_cooldown_remaining) + ' left, see Workers below)';
+        }
+        document.getElementById('process-status').innerText = statusText;
+
+        const stopBtn = document.getElementById('stop-btn');
+        stopBtn.style.display = isRunning ? 'inline-block' : 'none';
+        stopBtn.disabled = false;
+
+        renderReportGrid(data.metrics);
+        document.getElementById('report-raw').innerText = JSON.stringify(data.metrics, null, 2);
+    } catch (e) {
+        // keep last state on transient errors, but never swallow them silently
+        dbgWarn('poll #' + seq + ' /api/stats FAILED:', e);
+    }
+}
+
+// --- Stop button: actually cancels the running background task ---
+document.getElementById('stop-btn').addEventListener('click', async () => {
+    const stopBtn = document.getElementById('stop-btn');
+    stopBtn.disabled = true;
+    stopBtn.innerText = 'Stopping...';
+    try {
+        const resp = await fetch('/api/stop', { method: 'POST' });
+        const data = await resp.json();
+        const msg = document.getElementById('run-message');
+        msg.style.color = resp.ok ? '#4caf50' : '#f44336';
+        msg.innerText = data.message || data.detail || 'Stop requested.';
+    } catch (e) {
+        // ignore, next poll will reflect real state
+    } finally {
+        stopBtn.innerText = 'Stop';
+        pollStats();
+    }
+});
+
+// --- Workers accordion: shows live per-worker rate-limit cooldown timers ---
+const OPEN_WORKERS = new Set();
+
+function donutSvg(pct, ok) {
+    const r = 18, c = 2 * Math.PI * r;
+    const offset = c * (1 - pct / 100);
+    return '<div class="worker-donut-wrap">' +
+        '<svg width="44" height="44" viewBox="0 0 44 44">' +
+        '<circle class="worker-donut-bg" cx="22" cy="22" r="' + r + '"></circle>' +
+        '<circle class="worker-donut-fg' + (ok ? ' ok' : '') + '" cx="22" cy="22" r="' + r +
+        '" stroke-dasharray="' + c + '" stroke-dashoffset="' + offset + '"></circle>' +
+        '</svg><div class="worker-donut-label">' + Math.round(pct) + '%</div></div>';
+}
+
+function formatMMSS(seconds) {
+    seconds = Math.max(0, Math.round(seconds));
+    const mm = Math.floor(seconds / 60), ss = seconds % 60;
+    return String(mm).padStart(2, '0') + ':' + String(ss).padStart(2, '0');
+}
+
+async function pollWorkers() {
+    try {
+        const resp = await fetch('/api/workers');
+        const data = await resp.json();
+        dbg('/api/workers ->', (data.workers || []).length, 'workers', data.workers);
+        const container = document.getElementById('workers-accordion');
+        const workers = data.workers || [];
+        if (!workers.length) {
+            container.innerHTML = '<div class="worker-empty">No active workers yet.</div>';
+            return;
+        }
+        container.innerHTML = workers.map((w) => {
+            const key = w.stage + '-' + w.worker_id;
+            const inCooldown = w.cooldown_remaining > 0;
+            // Reversed donut: starts full and empties down to 0 as the cooldown elapses.
+            const pct = inCooldown && w.cooldown_total > 0
+                ? Math.max(0, Math.min(100, (w.cooldown_remaining / w.cooldown_total) * 100))
+                : 0;
+            const stateClass = inCooldown ? 'cooldown' : (w.status === 'error' ? 'error' : '');
+            const isOpen = OPEN_WORKERS.has(key);
+            const summary = inCooldown
+                ? ('cooldown ' + formatMMSS(w.cooldown_remaining) + ' remaining')
+                : escapeHtml(w.describe || w.status);
+            return '<div class="worker-item ' + stateClass + (isOpen ? ' open' : '') + '" data-key="' + key + '">' +
+                '<div class="worker-header" onclick="toggleWorker(\'' + key + '\')">' +
+                donutSvg(inCooldown ? pct : (w.status === 'idle' ? 0 : 100), !inCooldown) +
+                '<div class="worker-title">[' + escapeHtml(w.stage) + ' W' + w.worker_id + '] ' + summary + '</div>' +
+                '<span class="worker-caret">&#9656;</span>' +
+                '</div>' +
+                '<div class="worker-body">' +
+                'Requests: ' + w.requests + ' &middot; Rate-limit hits: ' + w.rate_limits +
+                (w.detail ? ('<br>Detail: ' + escapeHtml(w.detail)) : '') +
+                (inCooldown ? ('<br>Cooldown ends in: ' + formatMMSS(w.cooldown_remaining)) : '') +
+                '</div></div>';
+        }).join('');
+    } catch (e) { /* ignore */ }
+}
+
+function toggleWorker(key) {
+    if (OPEN_WORKERS.has(key)) { OPEN_WORKERS.delete(key); } else { OPEN_WORKERS.add(key); }
+    const el = document.querySelector('.worker-item[data-key="' + key + '"]');
+    if (el) el.classList.toggle('open');
+}
+
+async function pollLogs() {
+    try {
+        const resp = await fetch('/api/logs');
+        const data = await resp.json();
+        const box = document.getElementById('log-box');
+        box.innerText = (data.logs || []).join('\n');
+        box.scrollTop = box.scrollHeight;
+    } catch (e) { /* ignore */ }
+}
+
+async function pollResults() {
+    try {
+        const resp = await fetch('/api/results');
+        const data = await resp.json();
+        const section = document.getElementById('output-section');
+        if (!data.files || !data.files.length) {
+            section.innerText = 'No files yet.';
+            return;
+        }
+        section.innerHTML = data.files.map((f) => {
+            const sizeStr = f.exists ? (' (' + f.size + ' bytes)') : ' (pending...)';
+            const link = f.exists ? (' - <a href="' + f.download_url + '">download</a>') : '';
+            const currentBadge = f.is_current ? ' <span class="badge badge-running" style="padding:1px 5px; font-size:9px;">current</span>' : '';
+            return '<div>' + escapeHtml(f.display_name) + sizeStr + currentBadge + link + '</div>';
+        }).join('');
+    } catch (e) { /* ignore */ }
+}
+
+pollStats(); pollLogs(); pollResults(); pollWorkers();
+checkOverwrite(collectPayload(document.getElementById('run-form'))).then(renderOverwriteWarning);
+setInterval(pollStats, 2000);
+setInterval(pollLogs, 2000);
+setInterval(pollResults, 4000);
+setInterval(pollWorkers, 1000);
+</script>
+{% endblock %}

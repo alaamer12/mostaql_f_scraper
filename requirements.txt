@@ -13,3 +13,10 @@ typer
 rich
 humanize
 orjson
+pydantic-settings
+fastapi
+uvicorn
+python-dotenv
+jinja2
+python-multipart
+aiofiles

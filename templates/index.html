@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% block title %}Mostaql Scraper - Home{% endblock %}
+{% block content %}
+<div class="mui-panel">
+    <h1>Mostaql Scraper Dashboard</h1>
+    <p>
+        This is a production-ready web interface for the Mostaql Freelancer Scraper.
+        Every phase that used to be a CLI command is now available below as its own
+        page with inputs, drag &amp; drop file upload, a live log, a progress bar and
+        a reactive report section.
+    </p>
+    <p>
+        <span class="badge {{ 'badge-running' if status.is_running else 'badge-idle' }}">
+            {{ status.current_command or 'idle' }}
+        </span>
+        service status
+    </p>
+</div>
+
+<div class="mui-row">
+    {% for cmd in commands %}
+    <div class="mui-col-md-4">
+        <a class="command-card" href="/{{ cmd.slug }}">
+            <div class="mui-panel">
+                <h3>{{ cmd.title }}</h3>
+                <p>{{ cmd.description }}</p>
+            </div>
+        </a>
+    </div>
+    {% endfor %}
+</div>
+
+<div class="mui-panel">
+    <h3>Useful API endpoints</h3>
+    <ul>
+        <li><code>GET /health</code> - health check</li>
+        <li><code>GET /api/stats</code> - current progress/metrics (JSON)</li>
+        <li><code>GET /api/logs</code> - last 50 log lines (JSON)</li>
+        <li><code>GET /api/results</code> - list of generated result files (JSON)</li>
+        <li><code>GET /results/download/{filename}</code> - download a result file</li>
+    </ul>
+</div>
+{% endblock %}

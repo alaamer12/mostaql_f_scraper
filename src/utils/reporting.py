@@ -7,6 +7,7 @@ import logging
 import threading
 import sys
 import time
+import os
 from pathlib import Path
 import pandas as pd
 from tqdm.auto import tqdm
@@ -249,6 +250,9 @@ def is_colab_or_notebook() -> bool:
 def is_interactive_tty() -> bool:
     """Check if standard output and error support interactive Rich live updates."""
     if is_colab_or_notebook():
+        return False
+    # Check for Railway or other CI/non-interactive environments
+    if os.environ.get("NON_INTERACTIVE") or os.environ.get("CI"):
         return False
     return sys.stdout.isatty() and sys.stderr.isatty()
 

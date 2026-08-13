@@ -83,6 +83,21 @@ class ScraperOrchestrator:
         if close is not None:
             close()
 
+    @staticmethod
+    def _bar_pos(bar) -> str:
+        """Render a bar's current position as ``n/total`` for log lines.
+
+        The CLI showed what every worker was chewing on in a live table;
+        in the server there is no live table, so each worker logs its own
+        item together with the overall position instead.
+        """
+        try:
+            n = getattr(bar, "n", 0) or 0
+            total = getattr(bar, "total", None)
+            return f"{int(n)}/{int(total)}" if total else f"{int(n)}"
+        except Exception:
+            return "?"
+
     # ------------------------------------------------------------------
     # Phase 0: Followup
     # ------------------------------------------------------------------
@@ -147,11 +162,14 @@ class ScraperOrchestrator:
     # ------------------------------------------------------------------
     # Phase 0.5: Fixup
     # ------------------------------------------------------------------
-    async def run_fixup(self, input_path: Optional[str] = None, use_continue: bool = True) -> List[Freelancer]:
+    async def run_fixup(self, input_path: Optional[str] = None, use_continue: bool = True,
+                       output_json: Optional[str] = None, output_csv: Optional[str] = None) -> List[Freelancer]:
         """Phase 0.5: fix missing titles and ranks in existing data."""
-        return await self.stream_fixup(NullChannel(), input_path=input_path, use_continue=use_continue)
+        return await self.stream_fixup(NullChannel(), input_path=input_path, use_continue=use_continue,
+                                      output_json=output_json, output_csv=output_csv)
 
-    async def stream_fixup(self, out: Channel, input_path: Optional[str] = None, use_continue: bool = True) -> List[Freelancer]:
+    async def stream_fixup(self, out: Channel, input_path: Optional[str] = None, use_continue: bool = True,
+                          output_json: Optional[str] = None, output_csv: Optional[str] = None) -> List[Freelancer]:
         """Streaming form of Fixup Phase.
         
         Scans existing records for missing titles or ranks and re-fetches them.
@@ -212,17 +230,22 @@ class ScraperOrchestrator:
                 asyncio.create_task(self._fixup_worker(i, session, queue, sem, results_dict, pbar, metrics, out))
                 for i in range(self.config.profile_concurrency)
             ]
-            
-            await queue.join()
-            for w in workers:
-                w.cancel()
+
+            try:
+                await queue.join()
+            finally:
+                for w in workers:
+                    w.cancel()
+                await asyncio.gather(*workers, return_exceptions=True)
 
         self._close_bar(pbar)
         await out.close()
 
         # Save results
         final_results = list(results_dict.values())
-        self.exporter.export(final_results, json_path=actual_input_path, csv_path=actual_input_path.replace(".json", ".csv"))
+        target_json = output_json or actual_input_path
+        target_csv = output_csv or actual_input_path.replace(".json", ".csv")
+        self.exporter.export(final_results, json_path=target_json, csv_path=target_csv)
 
         metrics.duration_seconds = time.monotonic() - start_time
         self.registry.register(metrics)
@@ -235,6 +258,7 @@ class ScraperOrchestrator:
         while True:
             f = await queue.get()
             try:
+                log.info(f"[W{worker_id}] fixup [{self._bar_pos(pbar)}] {f.name} -> {f.profile_url}")
                 # We fetch the profile page to get title and rank
                 status, html = await net.get(session, f.profile_url, sem)
                 if html:
@@ -324,10 +348,12 @@ class ScraperOrchestrator:
                 )
                 for i in range(self.config.dir_concurrency)
             ]
-            await queue.join()
-            for w in workers:
-                w.cancel()
-            await asyncio.gather(*workers, return_exceptions=True)
+            try:
+                await queue.join()
+            finally:
+                for w in workers:
+                    w.cancel()
+                await asyncio.gather(*workers, return_exceptions=True)
         finally:
             self._close_bar(pbar)
             await out.close()
@@ -374,7 +400,9 @@ class ScraperOrchestrator:
             combo = await queue.get()
             try:
                 metrics.increment("combos_processed")
-                net.state.set("searching", self.combo_manager.get_label(combo))
+                label = self.combo_manager.get_label(combo)
+                net.state.set("searching", label)
+                log.info(f"[W{worker_id}] discovering [{self._bar_pos(pbar)}] {label}")
                 last_page = await self._find_max_pages(session, combo, sem, net, worker_id)
                 if last_page > 0:
                     metrics.increment("pages_found", last_page)
@@ -384,8 +412,8 @@ class ScraperOrchestrator:
                         metrics.min_pages_seen = last_page
                 else:
                     metrics.increment("empty_combos")
-                label = self.combo_manager.get_label(combo)
                 page_counts[label] = last_page
+                log.info(f"[W{worker_id}] discovered {label}: {last_page} pages")
                 pbar.update(1)
                 if out is not None and last_page > 0:
                     await out.send(PageCountItem(label=label, combo=combo, last_page=last_page))
@@ -433,6 +461,13 @@ class ScraperOrchestrator:
         while True:
             net.state.set("waiting for keyword", "")
             keyword_item = await queue.get()
+            # We don't know the true page count for a keyword upfront, so we
+            # estimate one for progress-bar purposes only and give partial
+            # credit after every single page fetched, instead of waiting
+            # for the (possibly many-page, possibly rate-limited-for-minutes)
+            # job to finish entirely before the bar moves at all.
+            estimated_pages = self.config.max_pages if self.config.max_pages and self.config.max_pages > 0 else 20
+            credit_given = 0.0
             try:
                 keyword = keyword_item.keyword
                 combo = keyword_item.combo
@@ -449,9 +484,20 @@ class ScraperOrchestrator:
                     virtual_combo["keyword"] = keyword
                     url = self.combo_manager.get_url(virtual_combo, page)
                     
+                    net.state.set("searching", f"{keyword} (page {page})")
+                    log.info(f"[W{worker_id}] followup [{self._bar_pos(pbar)}] '{keyword}' page {page}")
                     _, html = await net.get(session, url, sem)
                     metrics.increment("pages_scraped")
-                    
+
+                    # Monotonic, asymptotic credit: always strictly increases
+                    # with every page fetched (never caps out), so the bar keeps
+                    # moving even for keywords with far more pages than the
+                    # estimate, and still never exceeds +1 per keyword.
+                    new_credit = 1.0 - 1.0 / (1.0 + page / estimated_pages)
+                    if new_credit > credit_given:
+                        pbar.update(new_credit - credit_given)
+                        credit_given = new_credit
+
                     if not html:
                         break
                         
@@ -459,6 +505,7 @@ class ScraperOrchestrator:
                     if not freelancers:
                         break
                         
+                    new_here = 0
                     for f in freelancers:
                         if suppression_urls and f.profile_url in suppression_urls:
                             metrics.increment("duplicate_urls_skipped")
@@ -466,6 +513,7 @@ class ScraperOrchestrator:
 
                         if f.profile_url not in storage_dict:
                             storage_dict[f.profile_url] = f
+                            new_here += 1
                             metrics.increment("urls_discovered")
                             if f.name == "Unknown":
                                 metrics.increment("unknown_names")
@@ -473,16 +521,27 @@ class ScraperOrchestrator:
                                 await out.send(f)
                         else:
                             metrics.increment("duplicate_urls_skipped")
-                    
+
+                    log.info(
+                        f"[W{worker_id}] followup '{keyword}' page {page}: "
+                        f"{len(freelancers)} found, {new_here} new "
+                        f"(total unique {len(storage_dict)})"
+                    )
+
                     page += 1
-                    
-                pbar.update(1)
+
+                # Job fully done: top off any remaining credit so the bar
+                # reaches exactly +1 per completed keyword regardless of the
+                # estimate above/below-shooting the real page count.
+                pbar.update(1 - credit_given)
+                credit_given = 1.0
                 processed_items += 1
                 if target_output_json and processed_items % self.config.checkpoint_flush_every == 0:
                     records = list(storage_dict.values())
                     self.exporter.export(records, json_path=target_output_json, csv_path=target_output_csv)
             except Exception as e:
                 log.error(f"Followup worker {worker_id} failed on {keyword_item}: {e}")
+                pbar.update(1 - credit_given)
             finally:
                 net.state.set("idle", "")
                 queue.task_done()
@@ -691,10 +750,13 @@ class ScraperOrchestrator:
                         )
                         for i in range(self.config.dir_concurrency)
                     ]
-                
-                await queue.join()
-                for w in workers:
-                    w.cancel()
+
+                try:
+                    await queue.join()
+                finally:
+                    for w in workers:
+                        w.cancel()
+                    await asyncio.gather(*workers, return_exceptions=True)
         finally:
             self._close_bar(pbar)
             await out.close()
@@ -724,10 +786,17 @@ class ScraperOrchestrator:
         while True:
             net.state.set("waiting for combo", "")
             combo, last_page = await queue.get()
+            credit_given = 0.0
             try:
-                net.state.set("paging", self.combo_manager.get_label(combo))
+                combo_label = self.combo_manager.get_label(combo)
+                net.state.set("paging", combo_label)
                 for page in range(1, last_page + 1):
                     url = self.combo_manager.get_url(combo, page)
+                    net.state.set("paging", f"{combo_label} (page {page}/{last_page})")
+                    log.info(
+                        f"[W{worker_id}] extract [{self._bar_pos(pbar)}] {combo_label} "
+                        f"page {page}/{last_page}"
+                    )
                     _, html = await net.get(session, url, sem)
                     metrics.increment("pages_scraped")
                     if html:
@@ -745,13 +814,21 @@ class ScraperOrchestrator:
                                     await out.send(f)
                             else:
                                 metrics.increment("duplicate_urls_skipped")
-                pbar.update(1)
+                    # Report progress per page instead of only once the whole
+                    # (potentially many-page) combo finishes, so the bar keeps
+                    # moving visibly even while later pages are slow/rate-limited.
+                    new_credit = page / last_page
+                    pbar.update(new_credit - credit_given)
+                    credit_given = new_credit
                 processed_items += 1
                 if target_output_json and processed_items % self.config.checkpoint_flush_every == 0:
                     records = list(storage_dict.values())
                     self.exporter.export(records, json_path=target_output_json, csv_path=target_output_csv)
             except Exception as e:
                 log.error(f"Extraction worker {worker_id} failed on combo {combo}: {e}")
+                # Whatever credit wasn't reported for this combo, top it off so
+                # the bar's total still reaches 100% once every job is done.
+                pbar.update(1 - credit_given)
             finally:
                 net.state.set("idle", "")
                 queue.task_done()
@@ -836,9 +913,13 @@ class ScraperOrchestrator:
                         queued += 1
                         self._bump_total(pbar)
                         await queue.put(url)
-                await queue.join()
-                for w in workers:
-                    w.cancel()
+
+                try:
+                    await queue.join()
+                finally:
+                    for w in workers:
+                        w.cancel()
+                    await asyncio.gather(*workers, return_exceptions=True)
         finally:
             self._close_bar(pbar)
             await out.close()
@@ -860,6 +941,8 @@ class ScraperOrchestrator:
             net.state.set("waiting for url", "")
             url = await queue.get()
             try:
+                net.state.set("fetching", url)
+                log.info(f"[W{worker_id}] fetch [{self._bar_pos(pbar)}] {url}")
                 status, html = await net.get(session, url, sem)
                 p_html = None
                 if html:

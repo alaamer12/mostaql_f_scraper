@@ -22,63 +22,86 @@ A high-performance, four-phase modular scraper for Mostaql freelancers in the "d
 pip install -r requirements.txt
 ```
 
-### Usage Examples
-The system is unified under a single CLI entry point: `main.py`.
+### Usage Guide
+The system is now optimized for production deployment as a FastAPI web service, though it can still be run locally.
 
-#### View Examples Command
+#### 1. Configuration
+Configure the scraper using environment variables or a `.env` file. See `.env.example` for available options.
 ```bash
-python main.py examples
+cp .env.example .env
+# Edit .env with your desired settings
 ```
 
-#### Run Full Pipeline
-Includes discovery and detailed profile scraping:
+#### 2. Running the API Server
+The primary entry point starts a FastAPI server:
 ```bash
-python main.py scrape --deep
+python main.py
+```
+Or use `uvicorn` directly:
+```bash
+uvicorn src.main_api:app --host 0.0.0.0 --port 8000
 ```
 
-#### Run Each Phase Independently
-Each phase can be triggered on its own, with its own checkpoint and export:
+#### 3. Web UI (one page per command)
+Every phase that used to be a CLI command now has its own web page, styled with the
+[MUI CSS](https://www.muicss.com/) library for fast iteration. Open `http://localhost:8000/`
+for the guiding home page, which links to a page per command:
+
+- `/scrape`, `/discovery`, `/extract`, `/fetch`, `/deep_scrape`, `/followup`, `/fixup`
+
+Each command page provides:
+- **Inputs** — a form with the relevant options (resume/continue, limit, deep, etc.), plus a
+  drag & drop / file-explorer upload zone for commands that need an input file (`followup`, `fixup`).
+- **Process** — a live progress bar (with room for sub-progress bars) driven by the same
+  progress reporting the CLI used to print to the terminal.
+- **Log** — the last 50 log lines, refreshed automatically.
+- **Output** — the list of generated result files, available for download even before the
+  run finishes.
+- **Report** — a reactive panel that keeps polling and updating with the latest per-phase metrics.
+
+#### 4. API Endpoints
+The pages above are just a UI over the following JSON API, which you can still call directly:
+- `GET /health`: Check service status.
+- `POST /api/run/{command}`: Trigger a scraping operation in the background (`command` is one of
+  `scrape`, `discovery`, `extract`, `fetch`, `deep_scrape`, `followup`, `fixup`).
+  - Body (JSON): `resume` (bool), `deep` (bool), `limit` (int), `input_file` (path, for followup/fixup).
+- `POST /api/upload`: Upload a `.json` input file (used by the followup/fixup pages); returns the saved path.
+- `GET /api/stats`: View current progress, task status, and per-phase metrics.
+- `GET /api/logs`: Last 50 log lines.
+- `GET /api/results`: List available JSON/CSV result files.
+- `GET /results/download/{filename}`: Download a specific result file.
+- `POST /scrape`, `GET /stats`, `GET /results`: Kept as backward-compatible aliases.
+
+#### 5. Analytics Dashboard
+The interactive dashboard is still available and can be launched separately:
 ```bash
-python main.py discovery --new   # Phase 1
-python main.py extract           # Phase 2
-python main.py fetch --limit 100 # Phase 3
-python main.py parse             # Phase 4
+# Launch via the API stats or by running the dashboard script
+python -m src.dashboard
 ```
 
-#### Resume Disrupted Scrape
-Continue from where the system left off using checkpoints:
-```bash
-python main.py deep-scrape --continue
-```
-
-#### Testing with Limits
-Process only the first 50 discovered profiles for validation:
-```bash
-python main.py deep-scrape --limit 50
-```
-
-#### Data Analytics & Dashboard
-```bash
-python main.py stats      # View data summary in terminal
-python main.py dashboard  # Launch interactive web dashboard
-```
+### Deployment (Railway)
+This project is ready for 24/7 operation on Railway:
+1. Connect your GitHub repository to Railway.
+2. Add a **Persistent Volume** and mount it if you want to keep results across redeploys.
+3. Set environment variables (e.g., `MOSTAQL_MAX_PAGES`) in the Railway dashboard.
+4. Railway will automatically detect the `requirements.txt` and start the server using the default `python main.py`.
 
 ### Project Architecture
 The project is organized into a clean `src/` directory:
+- `templates/`: Jinja2 + MUI CSS templates for the web UI (`base.html`, `index.html`, `command.html`).
+- `uploads/`: Runtime directory for files uploaded via the `followup`/`fixup` drag & drop pages.
+- `src/main_api.py`: FastAPI server, per-command page routes, JSON API, and background task management.
 - `src/services/`:
   - `orchestrator.py`: Pipeline coordination and worker management for all 4 phases.
   - `network.py`: Advanced rate limiting and HTTP request handling.
   - `parser.py`: HTML processing for profiles and directory pages.
   - `storage.py`: Raw JSON/JSONL/CSV file persistence and checkpoint management.
   - `exporter.py`: Format-aware exporting of any phase's results to JSON/CSV.
-- `src/models.py`: Typed `dataclasses` for domain entities.
+- `src/models.py`: Pydantic `BaseSettings` for configuration and typed `dataclasses` for domain entities.
 - `src/utils/`:
-  - `reporting.py`: `PhaseMetrics` dataclass (with `overlappable` field metadata) and `MetricsRegistry` for per-phase + aggregated reporting.
+  - `reporting.py`: `PhaseMetrics` and `MetricsRegistry` for metrics tracking.
   - `formatting.py`, `combos.py`, `logging_utils.py`: Time-based paths, filter combinations, logging setup.
-- `main.py`: Unified CLI entry point using `typer` and `rich`, exposing each phase as its own command.
+- `main.py`: Entry point that launches the FastAPI server.
 
 ### Help
-For a full list of commands and flags:
-```bash
-python main.py --help
-```
+The API provides self-documenting Swagger UI at `/docs` (e.g., `http://localhost:8000/docs`) where you can test all endpoints directly.
