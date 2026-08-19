@@ -907,6 +907,8 @@ async def download_result(run_id: str, filename: str):
 
 if __name__ == "__main__":
     import uvicorn
+    is_railway = bool(os.environ.get("RAILWAY_ENVIRONMENT") or os.environ.get("RAILWAY_STATIC_URL") or os.environ.get("RAILWAY_PROJECT_ID"))
+    default_host = "0.0.0.0" if is_railway else "127.0.0.1"
     port = int(os.environ.get("PORT", 8000))
-    host = os.environ.get("HOST", "127.0.0.1")
+    host = os.environ.get("HOST", default_host)
     uvicorn.run(app, host=host, port=port)

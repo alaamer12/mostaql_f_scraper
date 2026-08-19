@@ -693,7 +693,9 @@ def render_tab(tab: str) -> html.Div:
 # ENTRY POINT
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
-    host = os.environ.get("HOST", "127.0.0.1")
+    is_railway = bool(os.environ.get("RAILWAY_ENVIRONMENT") or os.environ.get("RAILWAY_STATIC_URL") or os.environ.get("RAILWAY_PROJECT_ID"))
+    default_host = "0.0.0.0" if is_railway else "127.0.0.1"
+    host = os.environ.get("HOST", default_host)
     port = int(os.environ.get("PORT", 8050))
     print("\n" + "=" * 60)
     print("  Mostaql Freelancers Analytics Dashboard")
