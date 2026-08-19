@@ -215,6 +215,53 @@ function escapeHtml(str) {
     }[c]));
 }
 
+function isPlainObject(value) {
+    return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function renderNestedTable(obj) {
+    // Recursively renders a plain object as its own key/value sub-table,
+    // so e.g. {"Followup": {"urls_discovered": 5841, ...}} turns into a
+    // proper nested grid instead of a dumped JSON blob in one cell.
+    let html = '<table class="report-grid-table report-grid-table--nested"><tbody>';
+    for (const [key, value] of Object.entries(obj)) {
+        html += '<tr><th>' + escapeHtml(key) + '</th><td>' + formatCellValue(value) + '</td></tr>';
+    }
+    html += '</tbody></table>';
+    return html;
+}
+
+function renderNestedList(arr) {
+    if (arr.length === 0) {
+        return '<span class="report-val-empty">[]</span>';
+    }
+    // Array of plain objects with a shared shape reads best as rows of one table.
+    if (arr.every(isPlainObject)) {
+        const columns = [];
+        for (const item of arr) {
+            for (const key of Object.keys(item)) {
+                if (!columns.includes(key)) columns.push(key);
+            }
+        }
+        let html = '<table class="report-grid-table report-grid-table--nested"><thead><tr>';
+        for (const col of columns) html += '<th>' + escapeHtml(col) + '</th>';
+        html += '</tr></thead><tbody>';
+        for (const item of arr) {
+            html += '<tr>';
+            for (const col of columns) html += '<td>' + formatCellValue(item[col]) + '</td>';
+            html += '</tr>';
+        }
+        html += '</tbody></table>';
+        return html;
+    }
+    let html = '<table class="report-grid-table report-grid-table--nested"><tbody>';
+    arr.forEach((item, idx) => {
+        html += '<tr><th>' + idx + '</th><td>' + formatCellValue(item) + '</td></tr>';
+    });
+    html += '</tbody></table>';
+    return html;
+}
+
 function formatCellValue(value) {
     if (value === null || value === undefined) {
         return '<span class="report-val-null">null</span>';
@@ -225,8 +272,14 @@ function formatCellValue(value) {
     if (typeof value === 'boolean') {
         return '<span class="report-val-bool-' + value + '">' + value + '</span>';
     }
-    if (typeof value === 'object') {
-        return '<span class="report-val-object">' + escapeHtml(JSON.stringify(value, null, 2)) + '</span>';
+    if (Array.isArray(value)) {
+        return renderNestedList(value);
+    }
+    if (isPlainObject(value)) {
+        if (Object.keys(value).length === 0) {
+            return '<span class="report-val-empty">{}</span>';
+        }
+        return renderNestedTable(value);
     }
     return escapeHtml(value);
 }
@@ -239,12 +292,7 @@ function renderReportGrid(data) {
         return;
     }
     container.className = '';
-    let html = '<table class="report-grid-table"><tbody>';
-    for (const [key, value] of Object.entries(data)) {
-        html += '<tr><th>' + escapeHtml(key) + '</th><td>' + formatCellValue(value) + '</td></tr>';
-    }
-    html += '</tbody></table>';
-    container.innerHTML = html;
+    container.innerHTML = renderNestedTable(data);
 }
 
 // --- Report tabs ---

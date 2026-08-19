@@ -1,0 +1,696 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>User Directory</title>
+<style>
+  :root{
+    --ink:#1b1d23;
+    --paper:#f6f4ee;
+    --card:#ffffff;
+    --accent:#2a6f4b;
+    --accent-soft:#e4efe8;
+    --line:#e2ded2;
+    --muted:#6b6d76;
+    --shadow: 0 1px 2px rgba(27,29,35,0.04), 0 8px 24px rgba(27,29,35,0.06);
+  }
+  *{box-sizing:border-box;}
+  html,body{height:100%;}
+  body{
+    margin:0;
+    background:var(--paper);
+    color:var(--ink);
+    font-family:'Segoe UI','Inter',system-ui,-apple-system,sans-serif;
+    display:flex;
+    flex-direction:column;
+  }
+  .wrap{
+    max-width:1200px;
+    width:100%;
+    margin:0 auto;
+    padding:32px 24px 0;
+    display:flex;
+    flex-direction:column;
+    flex:1;
+    min-height:0;
+  }
+  header{margin-bottom:20px; flex-shrink:0;}
+  h1{font-size:clamp(26px,4vw,36px); margin:0 0 4px; letter-spacing:-0.02em; font-weight:700;}
+  .subtitle{color:var(--muted); font-size:14px; margin:0;}
+
+  .controls{
+    background:var(--card);
+    border:1px solid var(--line);
+    border-radius:14px;
+    padding:16px 18px;
+    display:flex;
+    gap:14px;
+    align-items:center;
+    flex-wrap:wrap;
+    box-shadow:var(--shadow);
+    margin-bottom:14px;
+    flex-shrink:0;
+  }
+  .search-box{flex:1; min-width:220px; position:relative;}
+  .search-box input{
+    width:100%;
+    padding:11px 14px 11px 38px;
+    border-radius:10px;
+    border:1.5px solid var(--line);
+    font-size:15px;
+    background:var(--paper);
+    color:var(--ink);
+  }
+  .search-box input:focus{outline:none; border-color:var(--accent); background:#fff;}
+  .search-icon{position:absolute; left:12px; top:50%; transform:translateY(-50%); width:16px; height:16px; color:var(--muted); pointer-events:none;}
+  .toggle{
+    display:flex; align-items:center; gap:8px; font-size:13.5px; color:var(--ink);
+    user-select:none; cursor:pointer; white-space:nowrap;
+    padding:8px 12px; border-radius:8px; border:1.5px solid var(--line); background:var(--paper);
+  }
+  .toggle:has(input:checked){border-color:var(--accent); background:var(--accent-soft);}
+  .toggle input{accent-color:var(--accent); width:15px; height:15px; cursor:pointer;}
+
+  .drop-zone{
+    flex-basis:100%;
+    border:1.5px dashed var(--line);
+    border-radius:12px;
+    padding:12px;
+    text-align:center;
+    cursor:pointer;
+    color:var(--muted);
+    font-size:13px;
+  }
+  .drop-zone:hover, .drop-zone.dragover{border-color:var(--accent); background:var(--accent-soft); color:var(--accent);}
+  .drop-zone input{display:none;}
+
+  .status-row{
+    display:flex; justify-content:space-between; align-items:center;
+    margin-bottom:12px; font-size:12.5px; color:var(--muted); flex-shrink:0;
+  }
+  .status-row button{
+    border:1px solid var(--line); background:var(--card); color:var(--ink);
+    padding:5px 11px; border-radius:8px; font-size:12px; cursor:pointer; margin-left:8px;
+  }
+  .status-row button:hover{border-color:var(--accent); color:var(--accent);}
+  .count strong{color:var(--ink);}
+
+  /* Virtualized scroll area */
+  #scrollArea{
+    flex:1;
+    min-height:0;
+    overflow-y:auto;
+    border:1px solid var(--line);
+    border-radius:14px;
+    background:transparent;
+    position:relative;
+  }
+  #scrollSpacer{
+    position:relative;
+    width:100%;
+  }
+  #rowLayer{
+    position:absolute;
+    top:0; left:0; right:0;
+  }
+  .row{
+    position:absolute;
+    left:0; right:0;
+    display:grid;
+    grid-template-columns:repeat(var(--cols,3), 1fr);
+    gap:14px;
+    padding:0 4px;
+  }
+
+  .card{
+    background:var(--card);
+    border:1px solid var(--line);
+    border-radius:14px;
+    padding:16px;
+    display:flex;
+    gap:13px;
+    align-items:flex-start;
+    text-decoration:none;
+    color:inherit;
+    box-shadow:var(--shadow);
+    transition:transform .1s ease, border-color .1s ease;
+    min-width:0;
+  }
+  .card:hover{transform:translateY(-2px); border-color:var(--accent);}
+
+  .avatar, .avatar-fallback{
+    width:52px; height:52px; border-radius:50%; flex-shrink:0;
+    border:1px solid var(--line); background:var(--accent-soft);
+  }
+  .avatar{object-fit:cover;}
+  .avatar-fallback{
+    display:flex; align-items:center; justify-content:center;
+    font-weight:700; font-size:17px; color:var(--accent);
+  }
+
+  .card-body{min-width:0; flex:1;}
+  .rank{
+    display:inline-block; font-size:11px; font-weight:600; color:var(--accent);
+    background:var(--accent-soft); padding:2px 8px; border-radius:100px; margin-bottom:6px;
+  }
+  .name{font-size:16px; font-weight:700; margin:0 0 3px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
+  .title{font-size:13px; color:var(--muted); margin:0 0 6px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
+  .profile-link{font-size:12px; color:var(--muted); display:flex; align-items:center; gap:4px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
+  .profile-link svg{width:11px; height:11px; flex-shrink:0;}
+  mark{background:#ffe27a; color:inherit; border-radius:3px; padding:0 1px;}
+  mark.ctx{background:#bfe3cc; color:inherit; border-radius:3px; padding:0 1px;}
+
+  .empty, .no-file{
+    text-align:center; padding:60px 20px; color:var(--muted);
+  }
+  .empty h3, .no-file h3{color:var(--ink); font-size:18px; margin:0 0 6px;}
+  .no-file{border:1.5px dashed var(--line); border-radius:14px; background:var(--card); flex:1;}
+
+  footer{padding:16px 0; flex-shrink:0;}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>User Directory</h1>
+    <p class="subtitle">Virtualized rendering — handles large JSON files smoothly.</p>
+  </header>
+
+  <div class="controls">
+    <div class="search-box">
+      <svg class="search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+      </svg>
+      <input id="searchInput" type="text" placeholder="Search by name…" autocomplete="off">
+    </div>
+    <label class="toggle">
+      <input type="checkbox" id="exactToggle">
+      Exact match
+    </label>
+    <div class="drop-zone" id="dropZone">
+      <input type="file" id="fileInput" accept=".json,application/json">
+      <span id="dropZoneText">📂 Click or drop a JSON file here to load users</span>
+    </div>
+  </div>
+
+  <div class="status-row" id="statusRow" style="display:none;">
+    <div class="count">Showing <strong id="visibleCount">0</strong> of <strong id="totalCount">0</strong> users</div>
+    <div><span id="fileName"></span><button id="changeFileBtn" type="button">Change file</button></div>
+  </div>
+
+  <div id="scrollArea" style="display:none;">
+    <div id="scrollSpacer">
+      <div id="rowLayer"></div>
+    </div>
+  </div>
+
+  <div class="no-file" id="noFileState">
+    <h3>No data loaded yet</h3>
+    <p>Use the drop zone above to load your JSON file of users.</p>
+  </div>
+  <div class="empty" id="emptyState" style="display:none;">
+    <h3>No matches</h3>
+    <p id="emptyMsg">Try a different name.</p>
+  </div>
+</div>
+
+<script>
+(function(){
+  const searchInput = document.getElementById('searchInput');
+  const exactToggle = document.getElementById('exactToggle');
+  const fileInput = document.getElementById('fileInput');
+  const dropZone = document.getElementById('dropZone');
+  const noFileState = document.getElementById('noFileState');
+  const emptyState = document.getElementById('emptyState');
+  const emptyMsg = document.getElementById('emptyMsg');
+  const statusRow = document.getElementById('statusRow');
+  const fileNameEl = document.getElementById('fileName');
+  const changeFileBtn = document.getElementById('changeFileBtn');
+  const visibleCountEl = document.getElementById('visibleCount');
+  const totalCountEl = document.getElementById('totalCount');
+  const scrollArea = document.getElementById('scrollArea');
+  const scrollSpacer = document.getElementById('scrollSpacer');
+  const rowLayer = document.getElementById('rowLayer');
+
+  let allUsers = [];        // full parsed dataset
+  let filtered = [];        // currently matched users (array of {user, score})
+  let cols = 3;
+  const ROW_HEIGHT = 108;   // card height + row gap
+  const CARD_GAP = 14;
+  const OVERSCAN_ROWS = 3;
+
+  const cardPool = new Map(); // rowIndex -> row element, reused across scroll frames
+  const avatarCache = new Map(); // avatar_url -> 'ok' | 'fail' (avoid re-testing broken urls repeatedly)
+
+  // ---------- helpers ----------
+  function escapeHtml(str){
+    return String(str)
+      .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+      .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+  }
+  function initials(name){
+    if(!name) return '?';
+    const parts = name.trim().split(/\s+/).filter(Boolean);
+    if(parts.length === 0) return '?';
+    if(parts.length === 1) return parts[0][0].toUpperCase();
+    return (parts[0][0] + parts[parts.length-1][0]).toUpperCase();
+  }
+  function resolveAvatarUrl(url){
+    if(!url || typeof url !== 'string') return null;
+    let u = url.trim();
+    if(!u) return null;
+    if(u.startsWith('//')) u = 'https:' + u;
+    return u;
+  }
+  // ---------- Arabic-aware normalization ----------
+  // Handles: tashkeel/tatweel removal, alef/ya/ta-marbuta unification, NFC, latin lowercasing.
+  // Returns normalized string + a map from each normalized-char index back to its
+  // original-string index, so match positions can be translated back for highlighting.
+  const DIACRITIC_RE = /[\u064B-\u065F\u0670\u06D6-\u06ED]/;
+  function normalizeText(text){
+    text = String(text).normalize('NFC');
+    let out = '';
+    const origIndex = [];
+    for(let i = 0; i < text.length; i++){
+      const ch = text[i];
+      const code = ch.codePointAt(0);
+      if(DIACRITIC_RE.test(ch) || code === 0x0640) continue; // drop diacritics/tatweel
+      let nch;
+      if(code===0x0622||code===0x0623||code===0x0625||code===0x0671) nch = 'ا'; // alef variants
+      else if(code===0x0649) nch = 'ي';                                        // alef maksura -> ya
+      else if(code===0x0629) nch = 'ه';                                        // ta marbuta -> ha
+      else nch = ch.toLowerCase();
+      out += nch;
+      origIndex.push(i);
+    }
+    return {norm: out, origIndex};
+  }
+
+  // common Arabic prefixes/suffixes recognized as "context" around a literal match
+  const AR_PREFIXES = ['وال','بال','كال','فال','لل','ال','و','ف','ب','ك','ل'];
+  const AR_SUFFIXES = ['ها','هم','هن','كم','كن','ية','ات','ون','ين','ان','ه'];
+
+  function wordBoundsAround(str, start, end){
+    let ws = start;
+    while(ws > 0 && str[ws-1] !== ' ') ws--;
+    let we = end;
+    while(we < str.length && str[we] !== ' ') we++;
+    return {ws, we};
+  }
+
+  // Find the best subsequence match, returning matched haystack positions (not
+  // necessarily contiguous) plus a score for ranking. Used for fuzzy mode.
+  function fuzzySubsequence(needle, haystack){
+    if(!needle) return null;
+    let ni = 0, gapPenalty = 0;
+    const positions = [];
+    for(let hi = 0; hi < haystack.length && ni < needle.length; hi++){
+      if(haystack[hi] === needle[ni]){ positions.push(hi); ni++; }
+      else if(ni > 0){ gapPenalty++; }
+    }
+    if(ni < needle.length) return null;
+    const score = needle.length*10 - gapPenalty;
+    return {positions, score};
+  }
+
+  // Core search primitive: given a user (with precomputed .norm/.origIndex) and a
+  // normalized query, returns null (no match) or a highlight/ranking descriptor.
+  function findMatch(user, queryNorm, exact){
+    if(!queryNorm) return {score:0, origStart:-1, origEnd:-1, yellowOrig:null};
+    const hay = user.norm;
+    let start, end, yellowPositions, score;
+
+    const idx = hay.indexOf(queryNorm);
+    if(idx !== -1){
+      // contiguous literal match — best case, works for prefix cases like "شركة" in "الشركة"
+      start = idx; end = idx + queryNorm.length;
+      yellowPositions = [];
+      for(let i = start; i < end; i++) yellowPositions.push(i);
+      score = 1000 - idx;
+    } else {
+      if(exact) return null;
+      const fz = fuzzySubsequence(queryNorm, hay);
+      if(!fz) return null;
+      yellowPositions = fz.positions;
+      start = fz.positions[0];
+      end = fz.positions[fz.positions.length-1] + 1;
+      score = fz.score;
+    }
+
+    // extend the highlighted span to include a recognized Arabic prefix/suffix
+    // sitting right next to the literal match — shown as "context" (green)
+    const {ws, we} = wordBoundsAround(hay, start, end);
+    const before = hay.slice(ws, start);
+    const after = hay.slice(end, we);
+    let spanStart = start, spanEnd = end;
+    if(AR_PREFIXES.includes(before)) spanStart = ws;
+    if(AR_SUFFIXES.includes(after)) spanEnd = we;
+
+    const origIndex = user.origIndex;
+    const origStart = origIndex[spanStart];
+    const origEnd = spanEnd < origIndex.length ? origIndex[spanEnd] : user.name.length;
+    const yellowOrig = new Set(yellowPositions.map(p => origIndex[p]));
+
+    return {score, origStart, origEnd, yellowOrig};
+  }
+
+  // Renders `text` with the literal typed characters marked yellow and any
+  // surrounding recognized affix / fuzzy-gap context marked green.
+  function renderHighlighted(text, matchInfo){
+    if(!matchInfo || matchInfo.origStart < 0) return escapeHtml(text);
+    const {origStart, origEnd, yellowOrig} = matchInfo;
+    let out = escapeHtml(text.slice(0, origStart));
+    let i = origStart;
+    while(i < origEnd){
+      const isYellow = yellowOrig.has(i);
+      let j = i;
+      while(j < origEnd && yellowOrig.has(j) === isYellow) j++;
+      const chunk = escapeHtml(text.slice(i, j));
+      out += isYellow ? ('<mark>' + chunk + '</mark>') : ('<mark class="ctx">' + chunk + '</mark>');
+      i = j;
+    }
+    out += escapeHtml(text.slice(origEnd));
+    return out;
+  }
+
+  // ---------- data prep ----------
+  // Precompute lowercase name once per user at load time (avoids repeated toLowerCase on every keystroke)
+  function prepareUsers(arr){
+    return arr.map(u => {
+      const name = u.name || '';
+      const {norm, origIndex} = normalizeText(name);
+      return {
+        name,
+        norm,
+        origIndex,
+        profile_url: u.profile_url || '',
+        avatar_url: u.avatar_url || '',
+        title: u.title || '',
+        rank: u.rank || ''
+      };
+    });
+  }
+
+  // ---------- layout ----------
+  function computeCols(){
+    const width = scrollArea.clientWidth;
+    if(width < 560) return 1;
+    if(width < 860) return 2;
+    if(width < 1150) return 3;
+    return 4;
+  }
+
+  function totalRows(){
+    return Math.ceil(filtered.length / cols);
+  }
+
+  function updateSpacerHeight(){
+    scrollSpacer.style.height = (totalRows() * ROW_HEIGHT) + 'px';
+  }
+
+  // ---------- card building ----------
+  function setAvatar(imgEl, fallbackEl, user){
+    const url = resolveAvatarUrl(user.avatar_url);
+    if(!url){
+      imgEl.style.display = 'none';
+      fallbackEl.style.display = 'flex';
+      fallbackEl.textContent = initials(user.name);
+      return;
+    }
+    const cached = avatarCache.get(url);
+    if(cached === 'fail'){
+      imgEl.style.display = 'none';
+      fallbackEl.style.display = 'flex';
+      fallbackEl.textContent = initials(user.name);
+      return;
+    }
+    imgEl.style.display = '';
+    fallbackEl.style.display = 'none';
+    imgEl.src = url;
+    imgEl.onerror = function(){
+      avatarCache.set(url, 'fail');
+      imgEl.style.display = 'none';
+      fallbackEl.style.display = 'flex';
+      fallbackEl.textContent = initials(user.name);
+    };
+  }
+
+  function fillCard(cardEl, user, matchInfo){
+    cardEl.href = user.profile_url || '#';
+    cardEl.dataset.filled = '1';
+
+    const img = cardEl.querySelector('.avatar');
+    const fb = cardEl.querySelector('.avatar-fallback');
+    setAvatar(img, fb, user);
+
+    const rankEl = cardEl.querySelector('.rank');
+    if(user.rank){
+      rankEl.style.display = '';
+      rankEl.textContent = user.rank;
+    } else {
+      rankEl.style.display = 'none';
+    }
+
+    const nameEl = cardEl.querySelector('.name');
+    const displayName = user.name || 'Unnamed user';
+    if(matchInfo && matchInfo.origStart >= 0){
+      nameEl.innerHTML = renderHighlighted(displayName, matchInfo);
+    } else {
+      nameEl.textContent = displayName;
+    }
+
+    const titleEl = cardEl.querySelector('.title');
+    if(user.title){
+      titleEl.style.display = '';
+      titleEl.textContent = user.title;
+    } else {
+      titleEl.style.display = 'none';
+    }
+
+    const linkEl = cardEl.querySelector('.profile-link span');
+    const linkWrap = cardEl.querySelector('.profile-link');
+    if(user.profile_url){
+      linkWrap.style.display = '';
+      linkEl.textContent = user.profile_url.replace(/^https?:\/\//,'');
+    } else {
+      linkWrap.style.display = 'none';
+    }
+  }
+
+  function makeEmptyCard(){
+    const a = document.createElement('a');
+    a.className = 'card';
+    a.target = '_blank';
+    a.rel = 'noopener noreferrer';
+    a.innerHTML = `
+      <img class="avatar" loading="lazy" alt="">
+      <div class="avatar-fallback" style="display:none;"></div>
+      <div class="card-body">
+        <span class="rank" style="display:none;"></span>
+        <p class="name"></p>
+        <p class="title" style="display:none;"></p>
+        <div class="profile-link" style="display:none;">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
+          <span></span>
+        </div>
+      </div>`;
+    return a;
+  }
+
+  function makeRow(){
+    const row = document.createElement('div');
+    row.className = 'row';
+    row.style.setProperty('--cols', cols);
+    row.style.height = ROW_HEIGHT + 'px';
+    for(let i=0;i<cols;i++){
+      row.appendChild(makeEmptyCard());
+    }
+    return row;
+  }
+
+  // ---------- virtualized render ----------
+  let rafPending = false;
+  function scheduleRender(){
+    if(rafPending) return;
+    rafPending = true;
+    requestAnimationFrame(() => {
+      rafPending = false;
+      renderVisible();
+    });
+  }
+
+  function renderVisible(){
+    if(filtered.length === 0) return;
+    const scrollTop = scrollArea.scrollTop;
+    const viewportH = scrollArea.clientHeight;
+    const startRow = Math.max(0, Math.floor(scrollTop / ROW_HEIGHT) - OVERSCAN_ROWS);
+    const endRow = Math.min(totalRows() - 1, Math.ceil((scrollTop + viewportH) / ROW_HEIGHT) + OVERSCAN_ROWS);
+
+    const neededRows = new Set();
+    for(let r = startRow; r <= endRow; r++) neededRows.add(r);
+
+    // remove rows no longer needed
+    for(const [rowIdx, el] of cardPool){
+      if(!neededRows.has(rowIdx)){
+        el.remove();
+        cardPool.delete(rowIdx);
+      }
+    }
+
+    for(const rowIdx of neededRows){
+      let rowEl = cardPool.get(rowIdx);
+      if(!rowEl){
+        rowEl = makeRow();
+        rowEl.style.top = (rowIdx * ROW_HEIGHT) + 'px';
+        rowLayer.appendChild(rowEl);
+        cardPool.set(rowIdx, rowEl);
+      }
+      const cardEls = rowEl.children;
+      for(let c = 0; c < cols; c++){
+        const itemIdx = rowIdx * cols + c;
+        const cardEl = cardEls[c];
+        if(itemIdx < filtered.length){
+          cardEl.style.visibility = 'visible';
+          fillCard(cardEl, filtered[itemIdx].user, filtered[itemIdx].matchInfo);
+        } else {
+          cardEl.style.visibility = 'hidden';
+        }
+      }
+    }
+  }
+
+  function resetPool(){
+    rowLayer.innerHTML = '';
+    cardPool.clear();
+  }
+
+  // ---------- search ----------
+  function runSearch(){
+    const query = searchInput.value.trim();
+    const exact = exactToggle.checked;
+
+    if(!query){
+      filtered = allUsers.map(u => ({user:u, score:0, matchInfo:null}));
+    } else {
+      const queryNorm = normalizeText(query).norm;
+      filtered = [];
+      for(let i=0;i<allUsers.length;i++){
+        const u = allUsers[i];
+        const matchInfo = findMatch(u, queryNorm, exact);
+        if(matchInfo) filtered.push({user:u, score:matchInfo.score, matchInfo});
+      }
+      filtered.sort((a,b) => b.score - a.score);
+    }
+
+    visibleCountEl.textContent = filtered.length;
+
+    resetPool();
+
+    if(filtered.length === 0){
+      scrollArea.style.display = 'none';
+      emptyState.style.display = '';
+      emptyMsg.textContent = exact
+        ? 'Try a different name, or turn off exact match for fuzzy results.'
+        : 'Try a different name.';
+    } else {
+      emptyState.style.display = 'none';
+      scrollArea.style.display = '';
+      scrollArea.scrollTop = 0;
+      updateSpacerHeight();
+      renderVisible();
+    }
+  }
+
+  // debounce
+  let debounceTimer = null;
+  function debouncedSearch(){
+    clearTimeout(debounceTimer);
+    debounceTimer = setTimeout(runSearch, 200);
+  }
+
+  searchInput.addEventListener('input', debouncedSearch);
+  exactToggle.addEventListener('change', runSearch);
+  scrollArea.addEventListener('scroll', scheduleRender, {passive:true});
+
+  let resizeTimer = null;
+  window.addEventListener('resize', () => {
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(() => {
+      const newCols = computeCols();
+      if(newCols !== cols){
+        cols = newCols;
+        resetPool();
+        updateSpacerHeight();
+        renderVisible();
+      }
+    }, 120);
+  });
+
+  // ---------- file loading ----------
+  function loadUsers(data, filename){
+    let arr = data;
+    if(!Array.isArray(arr)){
+      if(arr && typeof arr === 'object'){
+        const candidateKey = Object.keys(arr).find(k => Array.isArray(arr[k]));
+        if(candidateKey) arr = arr[candidateKey];
+      }
+    }
+    if(!Array.isArray(arr)){
+      alert('JSON must be an array of user objects (or an object containing one).');
+      return;
+    }
+
+    allUsers = prepareUsers(arr);
+    avatarCache.clear();
+    cols = computeCols();
+
+    noFileState.style.display = 'none';
+    statusRow.style.display = 'flex';
+    fileNameEl.textContent = '📄 ' + (filename || 'loaded data') + ` (${allUsers.length.toLocaleString()} users)`;
+    totalCountEl.textContent = allUsers.length.toLocaleString();
+    searchInput.value = '';
+    exactToggle.checked = false;
+
+    runSearch();
+  }
+
+  function handleFile(file){
+    if(!file) return;
+    dropZone.querySelector('#dropZoneText') && (dropZone.querySelector('#dropZoneText').textContent = '⏳ Parsing ' + file.name + ' …');
+    const reader = new FileReader();
+    reader.onload = function(e){
+      try{
+        const data = JSON.parse(e.target.result);
+        loadUsers(data, file.name);
+      }catch(err){
+        alert('Could not parse JSON: ' + err.message);
+      } finally {
+        dropZone.querySelector('#dropZoneText').textContent = '📂 Click or drop a JSON file here to load users';
+      }
+    };
+    reader.onerror = function(){
+      alert('Could not read file.');
+    };
+    reader.readAsText(file);
+  }
+
+  fileInput.addEventListener('change', (e) => handleFile(e.target.files[0]));
+  dropZone.addEventListener('click', () => fileInput.click());
+  changeFileBtn.addEventListener('click', () => fileInput.click());
+
+  ['dragenter','dragover'].forEach(evt => {
+    dropZone.addEventListener(evt, (e) => { e.preventDefault(); e.stopPropagation(); dropZone.classList.add('dragover'); });
+  });
+  ['dragleave','drop'].forEach(evt => {
+    dropZone.addEventListener(evt, (e) => { e.preventDefault(); e.stopPropagation(); dropZone.classList.remove('dragover'); });
+  });
+  dropZone.addEventListener('drop', (e) => {
+    const file = e.dataTransfer.files[0];
+    handleFile(file);
+  });
+
+})();
+</script>
+</body>
+</html>

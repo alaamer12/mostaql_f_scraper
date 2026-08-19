@@ -6,6 +6,7 @@ import collections
 import hashlib
 import asyncio
 import uuid
+import json
 from typing import Any, Dict, List, Optional
 
 from fastapi import FastAPI, BackgroundTasks, HTTPException, Request, UploadFile, File
@@ -16,6 +17,7 @@ from pydantic import BaseModel
 from .models import ScrapeConfig
 from .services.orchestrator import ScraperOrchestrator
 from .pipeline.channel import Channel, NullChannel
+from .pipeline.spec import STAGE_REGISTRY
 from .utils.formatting import TimeFormatter
 from .utils.reporting import WORKERS
 
@@ -474,6 +476,30 @@ COMMANDS_BY_SLUG = {c["slug"]: c for c in COMMANDS}
 # ----------------------------------------------------------------------
 # Root & health
 # ----------------------------------------------------------------------
+@app.get("/command-builder")
+async def command_builder(request: Request):
+    # Pass STAGE_REGISTRY to the template
+    # We convert StageSpec objects to dicts for JSON serialization if needed,
+    # but Jinja can handle the objects directly for the loop.
+    # We'll also provide a JSON string for the JS part.
+    specs_dict = {
+        name: {
+            "name": spec.name,
+            "description": spec.description,
+            "positions": [str(p) for p in spec.positions],
+        }
+        for name, spec in STAGE_REGISTRY.items()
+    }
+    return templates.TemplateResponse(
+        "command_builder.html",
+        {
+            "request": request,
+            "specs": STAGE_REGISTRY,
+            "specs_json": json.dumps(specs_dict)
+        }
+    )
+
+
 @app.get("/health")
 async def health_check():
     """Basic health check for Railway."""

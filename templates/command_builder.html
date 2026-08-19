@@ -1,0 +1,257 @@
+{% extends "base.html" %}
+{% block title %}Command Builder - Mostaql Scraper{% endblock %}
+{% block content %}
+<style>
+    .builder-container {
+        display: flex;
+        align-items: center;
+        overflow-x: auto;
+        padding: 40px 20px;
+        min-height: 300px;
+        gap: 0;
+    }
+    .command-block {
+        background: #fff;
+        border: 2px solid #2196f3;
+        border-radius: 8px;
+        padding: 16px;
+        width: 200px;
+        box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+        position: relative;
+        flex-shrink: 0;
+    }
+    .command-block h4 {
+        margin: 0 0 8px 0;
+        color: #1976d2;
+        text-transform: capitalize;
+    }
+    .command-block .remove-btn {
+        position: absolute;
+        top: -10px;
+        right: -10px;
+        background: #f44336;
+        color: #fff;
+        border: none;
+        border-radius: 50%;
+        width: 24px;
+        height: 24px;
+        cursor: pointer;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-weight: bold;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+    }
+    .add-command-btn {
+        background: #fff;
+        border: 2px dashed #9e9e9e;
+        border-radius: 8px;
+        padding: 16px;
+        width: 200px;
+        height: 100px;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        cursor: pointer;
+        color: #757575;
+        transition: all 0.3s;
+        flex-shrink: 0;
+    }
+    .add-command-btn:hover {
+        border-color: #2196f3;
+        color: #2196f3;
+        background: #e3f2fd;
+    }
+    .add-command-btn .plus-icon {
+        font-size: 24px;
+        margin-bottom: 8px;
+    }
+    .connector-svg {
+        width: 60px;
+        height: 40px;
+        flex-shrink: 0;
+    }
+    .connector-line {
+        stroke: #9e9e9e;
+        stroke-width: 2;
+        stroke-dasharray: 5,5;
+        fill: none;
+    }
+    .dropdown-container {
+        position: relative;
+    }
+    .dropdown-menu {
+        position: absolute;
+        top: 100%;
+        left: 0;
+        background: #fff;
+        border: 1px solid #e0e0e0;
+        border-radius: 4px;
+        box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+        z-index: 1000;
+        display: none;
+        width: 200px;
+    }
+    .dropdown-menu.show {
+        display: block;
+    }
+    .dropdown-item {
+        padding: 10px 16px;
+        cursor: pointer;
+        font-size: 14px;
+    }
+    .dropdown-item:hover {
+        background: #f5f5f5;
+        color: #1976d2;
+    }
+    .dropdown-item.disabled {
+        color: #bdbdbd;
+        cursor: not-allowed;
+    }
+    .config-field {
+        margin-top: 8px;
+    }
+    .config-field label {
+        font-size: 11px;
+        color: #757575;
+        display: block;
+    }
+    .config-field input {
+        width: 100%;
+        font-size: 12px;
+        padding: 4px;
+        border: 1px solid #e0e0e0;
+        border-radius: 4px;
+    }
+    .actions-bar {
+        margin-top: 20px;
+        text-align: right;
+    }
+</style>
+
+<h1>Command Pipeline Builder</h1>
+<p>Visually define and sequence your scraper commands.</p>
+
+<div class="mui-panel">
+    <div class="builder-container" id="builder-container">
+        <!-- Command blocks will be added here -->
+        <div class="dropdown-container" id="add-btn-container">
+            <div class="add-command-btn" onclick="toggleDropdown()">
+                <div class="plus-icon">+</div>
+                <div>Add Command</div>
+            </div>
+            <div class="dropdown-menu" id="commands-dropdown">
+                {% for cmd_name, spec in specs.items() %}
+                <div class="dropdown-item" onclick="addCommand('{{ cmd_name }}')">
+                    <strong>{{ cmd_name }}</strong>
+                    <div style="font-size: 10px; color: #757575;">{{ spec.description }}</div>
+                </div>
+                {% endfor %}
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="actions-bar">
+    <button class="mui-btn mui-btn--raised mui-btn--primary" onclick="runPipeline()">Run Pipeline</button>
+</div>
+
+<script>
+    const STAGE_SPECS = {{ specs_json | safe }};
+    let pipeline = [];
+
+    function toggleDropdown() {
+        document.getElementById('commands-dropdown').classList.toggle('show');
+    }
+
+    window.onclick = function(event) {
+        if (!event.target.closest('.dropdown-container')) {
+            const dropdowns = document.getElementsByClassName("dropdown-menu");
+            for (let i = 0; i < dropdowns.length; i++) {
+                const openDropdown = dropdowns[i];
+                if (openDropdown.classList.contains('show')) {
+                    openDropdown.classList.remove('show');
+                }
+            }
+        }
+    }
+
+    function addCommand(name) {
+        const spec = STAGE_SPECS[name];
+        const cmd = {
+            id: Date.now(),
+            name: name,
+            config: {}
+        };
+        pipeline.push(cmd);
+        renderPipeline();
+        document.getElementById('commands-dropdown').classList.remove('show');
+    }
+
+    function removeCommand(index) {
+        pipeline.splice(index, 1);
+        renderPipeline();
+    }
+
+    function updateConfig(index, key, value) {
+        pipeline[index].config[key] = value;
+    }
+
+    function renderPipeline() {
+        const container = document.getElementById('builder-container');
+        const addBtnContainer = document.getElementById('add-btn-container');
+        
+        // Clear all except add button
+        while (container.firstChild && container.firstChild !== addBtnContainer) {
+            container.removeChild(container.firstChild);
+        }
+
+        pipeline.forEach((cmd, index) => {
+            // Add connector if not the first
+            if (index > 0) {
+                const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+                svg.setAttribute("class", "connector-svg");
+                svg.innerHTML = '<line x1="0" y1="20" x2="60" y2="20" class="connector-line" />';
+                container.insertBefore(svg, addBtnContainer);
+            }
+
+            // Add command block
+            const block = document.createElement('div');
+            block.className = 'command-block';
+            
+            let configHtml = '';
+            // Basic config fields for demo, could be expanded based on spec.options
+            if (cmd.name === 'fetch' || cmd.name === 'discovery') {
+                configHtml += `
+                    <div class="config-field">
+                        <label>Limit</label>
+                        <input type="number" onchange="updateConfig(${index}, 'limit', this.value)" placeholder="No limit">
+                    </div>
+                `;
+            }
+
+            block.innerHTML = `
+                <button class="remove-btn" onclick="removeCommand(${index})">&times;</button>
+                <h4>${cmd.name}</h4>
+                <div style="font-size: 11px; color: #666;">${STAGE_SPECS[cmd.name].description}</div>
+                ${configHtml}
+            `;
+            container.insertBefore(block, addBtnContainer);
+        });
+    }
+
+    async function runPipeline() {
+        if (pipeline.length === 0) {
+            alert('Add at least one command.');
+            return;
+        }
+
+        const chain = pipeline.map(c => c.name);
+        // In a real implementation, we'd send this to a new API endpoint
+        // For now, let's redirect to a run page or show what would be sent
+        console.log("Running pipeline chain:", chain);
+        alert("Pipeline runner for " + chain.join(" -> ") + " would start now.");
+    }
+</script>
+{% endblock %}
