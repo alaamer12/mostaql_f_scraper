@@ -693,10 +693,12 @@ def render_tab(tab: str) -> html.Div:
 # ENTRY POINT
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
+    host = os.environ.get("HOST", "127.0.0.1")
+    port = int(os.environ.get("PORT", 8050))
     print("\n" + "=" * 60)
     print("  Mostaql Freelancers Analytics Dashboard")
     print(f"  Dataset loaded: {len(df)} freelancers")
-    print("  Open: http://127.0.0.1:8050")
+    print(f"  Open: http://{host}:{port}")
     print("=" * 60 + "\n")
 
-    app.run(debug=False, host="0.0.0.0", port=8050)
+    app.run(debug=False, host=host, port=port)

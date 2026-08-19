@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<!--
+  Adversarial fixture: pretends Mostaql did a full redesign.
+  No class/id names resemble the current site. Covers:
+  1. exact-ish original labels (none used verbatim on purpose)
+  2. synonym labels ("وقت التنفيذ" instead of "مدة التنفيذ")
+  3. completely different phrasing ("الوقت اللازم لإنجاز العمل")
+  4. split words across elements
+  5. split characters across nested elements
+  6. deeply nested wrappers (div > span > section > div > span ...)
+  7. reordered DOM (budget appears before status, etc.)
+  8. extra irrelevant/decorative elements (icons, svg, buttons) mixed in
+  9. a missing label case (open_projects_count has no label at all nearby)
+  10. ambiguous numbers (a bare "11" with no strong nearby context)
+  11. a number ("30") sitting near two plausible fields (duration vs hire rate %)
+  12. values with and without units
+  13. currency values ("$" variant and word variant "دولار")
+  14. a date that could be mistaken for a plain number (2024/03/10)
+  15. duplicate values (registration date shown twice, mobile+desktop)
+  16. mobile-specific markup block
+  17. desktop-specific markup block
+  18. no recognizable current CSS classes anywhere
+-->
+<html lang="ar" dir="rtl">
+<head><meta charset="utf-8"><title>مشروع جديد بتصميم مختلف تماما</title></head>
+<body>
+
+<div class="wrapper-x9">
+  <div class="block-alpha">
+    <span class="chip-1">
+      <svg width="12" height="12"><circle cx="6" cy="6" r="5"></circle></svg>
+    </span>
+    <!-- Budget shown BEFORE status: reordered DOM -->
+    <section class="row-b">
+      <div class="k-b">
+        <!-- word "التكلفة" (synonym for الميزانية) split across spans -->
+        <span>ال</span><span>تكلفة</span> <span>ال</span><span>تقديرية</span>
+      </div>
+      <div class="v-b">
+        <button class="icon-btn" aria-label="copy"><svg><path d="M0 0"></path></svg></button>
+        <span>$</span><span>500</span><span> - </span><span>$</span><span>800</span>
+      </div>
+    </section>
+  </div>
+
+  <div class="block-beta">
+    <section class="row-a">
+      <div><div><span>حالة</span></div></div>
+      <div><div><span>المشروع</span></div></div>
+      <div class="badge-green">مفتوح لاستقبال العروض</div>
+    </section>
+  </div>
+
+  <!-- duration: synonym "وقت التنفيذ" + deeply nested wrappers + split chars -->
+  <div class="block-gamma">
+    <div><span><section><div><span>و</span><span>قت</span></div></section></span></div>
+    <div><span><section><div><span>ال</span><span>تنفيذ</span></div></section></span></div>
+    <div class="deco"><i class="clock-icon"></i></div>
+    <div class="value-cell">
+      <span>1</span><span>1</span>
+    </div>
+    <div class="unit-cell">يوما</div>
+  </div>
+
+  <!-- alt phrasing entirely different from "مدة التنفيذ" would appear on a
+       different project; here we simulate a second duration-like phrase
+       elsewhere to test cross-field ambiguity for the number 30 below -->
+
+  <!-- hire rate: number 30 with % nearby, but also plausible as duration if
+       unit missing - tests ambiguous-number resolution (#10, #11) -->
+  <div class="block-delta">
+    <div class="lbl-weird">
+      <span>مع</span><span>دل</span> <span>ال</span><span>توظيف</span>
+    </div>
+    <div class="val-weird">
+      <span>30</span><span>%</span>
+    </div>
+  </div>
+
+  <!-- a second, contextless "30" elsewhere on the page with no unit and no
+       nearby stems at all - genuinely ambiguous, should get low confidence -->
+  <div class="noise-block">
+    <span>30</span>
+  </div>
+
+  <!-- bare "11" duplicate with zero context, far from the real duration
+       cluster - tests that scorer doesn't just grab any "11" on the page -->
+  <div class="footer-noise">
+    <span>11</span>
+  </div>
+
+  <!-- open_projects_count: value present, but NO label at all nearby
+       (missing-label case #9) -->
+  <div class="block-epsilon">
+    <div class="mystery-number">7</div>
+  </div>
+
+  <!-- in_progress_count: synonym-ish phrasing -->
+  <div class="block-zeta">
+    <span>مشاريع</span> <span>قيد</span> <span>الإنجاز</span> <span>حالياً</span>
+    <div><div><div><span>3</span></div></div></div>
+  </div>
+
+  <!-- ongoing_conversations -->
+  <div class="block-eta">
+    <div>التواصلات</div><div>الجارية</div>
+    <div class="badge-blue">5</div>
+  </div>
+
+  <!-- registration_date shown once in a "desktop-only" block ... -->
+  <div class="only-wide-screens">
+    <span>تاريخ</span> <span>التسجيل</span>
+    <span>2024/03/10</span>
+  </div>
+
+  <!-- ...and duplicated in a "mobile-only" block with different markup
+       (desktop/mobile duplication, #15/#16/#17) -->
+  <div class="only-narrow-screens" style="display:none">
+    <div class="mobile-meta-row">
+      <div class="mobile-meta-label">
+        <span>ت</span><span>اريخ</span> <span>ال</span><span>تسجيل</span>
+      </div>
+      <div class="mobile-meta-value">2024/03/10</div>
+    </div>
+  </div>
+
+  <!-- started_since: alt phrasing, relative date wording, only present
+       because this fixture pretends status = مكتمل for this one field -->
+  <div class="block-theta">
+    <span>ابتدأ</span> <span>عمل</span> <span>الفريق</span> <span>عليه</span> <span>منذ</span>
+    <span>15</span> <span>يوم</span>
+  </div>
+
+  <!-- published_date -->
+  <div class="block-iota">
+    <div>تاريخ</div><div>النشر</div>
+    <div>2024/02/20</div>
+  </div>
+
+  <!-- decorative junk mixed throughout: icons/buttons with numbers inside
+       that must NOT be picked up as real values -->
+  <div class="social-bar">
+    <button data-count="999">👍</button>
+    <span class="hidden-badge" style="display:none">42</span>
+  </div>
+
+</div>
+</body>
+</html>

@@ -38,3 +38,18 @@ dependencies = [
 dev = [
     "pytest>=9.1.1",
 ]
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+py-modules = ["main"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+
+[project.scripts]
+start = "main:main"
+server = "main:main"
+api = "main:main"

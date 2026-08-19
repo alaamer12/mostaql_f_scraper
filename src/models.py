@@ -16,22 +16,39 @@ class Freelancer:
 
 @dataclass(frozen=True)
 class ProfileDetails:
-    """Detailed information scraped during Phase 3."""
+    """Detailed information scraped during Phase 3 & 4."""
     name: str
     profile_url: str
-    category: str
-    title: Optional[str] = None
-    location: Optional[str] = None
+    category: str = "development"
+    title: str = "مستقل"
+    location: str = "غير محدد"
     rating: float = 0.0
     reviews_count: int = 0
-    completion_rate: Optional[str] = None
-    rehire_rate: Optional[str] = None
-    response_time: Optional[str] = None
-    last_seen: Optional[str] = None
-    member_since: Optional[str] = None
-    parse_confidence: Optional[str] = None
+    completion_rate: float = 100.0
+    ontime_delivery_rate: float = 100.0
+    rehire_rate: float = 100.0
+    communication_success_rate: float = 100.0
+    employment_rate: float = 100.0
+    total_completed_projects: float = 0.0
+    active_projects: float = 0.0
+    received_projects: float = 0.0
+    financial_deals: float = 0.0
+    response_time: str = "خلال يوم"
+    avg_response_time_raw: str = "خلال يوم"
+    avg_response_time_minutes: float = 1440.0
+    last_seen: str = "منذ يوم"
+    last_active: str = "منذ يوم"
+    member_since: str = "2021-01-01"
+    registration_date: str = "2021-01-01T00:00:00"
+    registration_date_str: str = "2021-01-01T00:00:00"
+    parse_confidence: str = "ok"
+    parse_signals: List[str] = field(default_factory=list)
     skills: List[str] = field(default_factory=list)
-    portfolio_count: int = 0
+    skills_count: float = 0.0
+    skills_str: str = ""
+    portfolio_count: float = 0.0
+    success_score: float = 0.0
+    rank: int = 1
     stats: Dict[str, Any] = field(default_factory=dict)
     scraped_at: str = field(default_factory=lambda: datetime.now().isoformat())
 

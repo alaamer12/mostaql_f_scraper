@@ -18,6 +18,7 @@ from ..pipeline.channel import Channel, NullChannel
 from .network import NetworkService
 from .parser import ParsingService
 from .storage import StorageService
+from ..utils.validators import StrictZeroNullValidator, NullFieldException
 from .exporter import ExporterService
 from ..utils.combos import ComboManager
 from ..utils.reporting import (
@@ -217,6 +218,8 @@ class ScraperOrchestrator:
         
         # Dictionary for fast lookup by URL
         results_dict = {f.profile_url: f for f in all_records}
+        target_json = output_json or actual_input_path
+        target_csv = output_csv or actual_input_path.replace(".json", ".csv")
         
         async with aiohttp.ClientSession() as session:
             net = NetworkService(self.config, worker_id=0, metrics=metrics)
@@ -227,7 +230,12 @@ class ScraperOrchestrator:
                 await queue.put(f)
                 
             workers = [
-                asyncio.create_task(self._fixup_worker(i, session, queue, sem, results_dict, pbar, metrics, out))
+                asyncio.create_task(
+                    self._fixup_worker(
+                        i, session, queue, sem, results_dict, pbar, metrics, out,
+                        target_output_json=target_json, target_output_csv=target_csv
+                    )
+                )
                 for i in range(self.config.profile_concurrency)
             ]
 
@@ -241,10 +249,8 @@ class ScraperOrchestrator:
         self._close_bar(pbar)
         await out.close()
 
-        # Save results
+        # Save results (final write)
         final_results = list(results_dict.values())
-        target_json = output_json or actual_input_path
-        target_csv = output_csv or actual_input_path.replace(".json", ".csv")
         self.exporter.export(final_results, json_path=target_json, csv_path=target_csv)
 
         metrics.duration_seconds = time.monotonic() - start_time
@@ -253,8 +259,11 @@ class ScraperOrchestrator:
         
         return final_results
 
-    async def _fixup_worker(self, worker_id, session, queue, sem, results_dict, pbar, metrics: PhaseMetrics, out: Optional[Channel]):
+    async def _fixup_worker(self, worker_id, session, queue, sem, results_dict, pbar, metrics: PhaseMetrics,
+                            out: Optional[Channel], target_output_json: Optional[str] = None,
+                            target_output_csv: Optional[str] = None):
         net = NetworkService(self.config, worker_id=worker_id, metrics=metrics)
+        processed_items = 0
         while True:
             f = await queue.get()
             try:
@@ -281,6 +290,10 @@ class ScraperOrchestrator:
                         metrics.increment("fixup_failed")
                 else:
                     metrics.increment("fixup_failed")
+                processed_items += 1
+                if target_output_json and processed_items % self.config.checkpoint_flush_every == 0:
+                    records = list(results_dict.values())
+                    self.exporter.export(records, json_path=target_output_json, csv_path=target_output_csv)
             except Exception as e:
                 log.error(f"Fixup worker {worker_id} failed on {f.profile_url}: {e}")
                 metrics.increment("fixup_failed")
@@ -529,6 +542,9 @@ class ScraperOrchestrator:
                     )
 
                     page += 1
+                    if target_output_json and metrics.pages_scraped % self.config.checkpoint_flush_every == 0:
+                        records = list(storage_dict.values())
+                        self.exporter.export(records, json_path=target_output_json, csv_path=target_output_csv)
 
                 # Job fully done: top off any remaining credit so the bar
                 # reaches exactly +1 per completed keyword regardless of the
@@ -820,6 +836,9 @@ class ScraperOrchestrator:
                     new_credit = page / last_page
                     pbar.update(new_credit - credit_given)
                     credit_given = new_credit
+                    if target_output_json and metrics.pages_scraped % self.config.checkpoint_flush_every == 0:
+                        records = list(storage_dict.values())
+                        self.exporter.export(records, json_path=target_output_json, csv_path=target_output_csv)
                 processed_items += 1
                 if target_output_json and processed_items % self.config.checkpoint_flush_every == 0:
                     records = list(storage_dict.values())
@@ -836,15 +855,16 @@ class ScraperOrchestrator:
     # ------------------------------------------------------------------
     # Phase 3: Fetch (raw HTML download)
     # ------------------------------------------------------------------
-    async def run_fetch(self, limit: Optional[int] = None, use_continue: bool = True) -> int:
+    async def run_fetch(self, limit: Optional[int] = None, use_continue: bool = True,
+                        input_path: Optional[str] = None) -> int:
         """Phase 3: download raw profile + portfolio HTML and cache it to disk,
         without parsing. Allows Phase 4 (Parse) to be re-run independently,
         e.g. after improving the parser, without re-hitting the network.
         """
-        return await self.stream_fetch(None, NullChannel(), limit=limit, use_continue=use_continue)
+        return await self.stream_fetch(None, NullChannel(), limit=limit, use_continue=use_continue, input_path=input_path)
 
     async def stream_fetch(self, inp: Optional[Channel], out: Channel, limit: Optional[int] = None,
-                           use_continue: bool = True) -> int:
+                           use_continue: bool = True, input_path: Optional[str] = None) -> int:
         """Streaming form of Phase 3.
 
         With ``inp is None`` the URL list is seeded from the extraction
@@ -860,13 +880,14 @@ class ScraperOrchestrator:
 
         urls: List[str] = []
         if inp is None:
-            freelancers_data = self.storage.load_json(self.config.resolve_path("output_json"))
+            source_file = input_path or self.config.resolve_path("output_json")
+            freelancers_data = self.storage.load_json(source_file)
             if not freelancers_data:
-                log.error("No discovered freelancers found. Run extraction first.")
+                log.error(f"No discovered freelancers found in {source_file}. Run extraction first.")
                 await out.close()
                 return 0
 
-            urls = [f["profile_url"] for f in freelancers_data]
+            urls = [f["profile_url"] for f in freelancers_data if "profile_url" in f]
             if limit:
                 urls = urls[:limit]
 
@@ -975,14 +996,18 @@ class ScraperOrchestrator:
     # ------------------------------------------------------------------
     # Phase 4: Parse
     # ------------------------------------------------------------------
-    def run_parse(self, use_continue: bool = True) -> List[ProfileDetails]:
+    def run_parse(self, use_continue: bool = True, output_json: Optional[str] = None,
+                  output_csv: Optional[str] = None) -> List[ProfileDetails]:
         """Phase 4: parse the raw HTML cached during Phase 3 into
         structured ProfileDetails records. Pure CPU-bound work, no network.
         """
-        return asyncio.run(self.stream_parse(None, NullChannel(), use_continue=use_continue))
+        return asyncio.run(self.stream_parse(None, NullChannel(), use_continue=use_continue,
+                                             output_json=output_json, output_csv=output_csv))
 
     async def stream_parse(self, inp: Optional[Channel], out: Channel,
-                           use_continue: bool = True) -> List[ProfileDetails]:
+                           use_continue: bool = True,
+                           output_json: Optional[str] = None,
+                           output_csv: Optional[str] = None) -> List[ProfileDetails]:
         """Streaming form of Phase 4.
 
         With ``inp is None`` the raw records are seeded from the fetch
@@ -997,41 +1022,57 @@ class ScraperOrchestrator:
 
         checkpoint_path = self.config.resolve_path("checkpoint_fetch_json")
         seeded: List[RawProfileRecord] = []
-        if inp is None:
+        if use_continue or inp is None:
             raw_records = self.storage.load_jsonl(checkpoint_path)
-            if not raw_records:
+            if not raw_records and inp is None:
                 log.error("No raw HTML cache found. Run fetch first.")
                 await out.close()
                 return []
-            seeded = [
-                RawProfileRecord(
-                    profile_url=rec["profile_url"],
-                    html=rec.get("html"),
-                    portfolio_html=rec.get("portfolio_html"),
-                )
-                for rec in raw_records
-            ]
+            if raw_records:
+                seeded = [
+                    RawProfileRecord(
+                        profile_url=rec["profile_url"],
+                        html=rec.get("html"),
+                        portfolio_html=rec.get("portfolio_html"),
+                    )
+                    for rec in raw_records
+                    if rec.get("profile_url")
+                ]
 
         results: List[ProfileDetails] = []
         pbar = self._make_bar("Parsing Profiles", total=len(seeded))
         state = WORKERS.get("Parse", 0)
 
+        json_target = output_json or self.config.resolve_path("profiles_json")
+        csv_target = output_csv or self.config.resolve_path("profiles_csv")
+        seen_urls: Set[str] = set()
+
         try:
             for record in seeded:
+                if record.profile_url in seen_urls:
+                    continue
+                seen_urls.add(record.profile_url)
                 state.set("parsing", record.profile_url)
                 state.requests += 1
                 await self._parse_record(record, results, metrics, out)
                 pbar.update(1)
+                if json_target and len(results) > 0 and len(results) % self.config.checkpoint_flush_every == 0:
+                    self.exporter.export(results, json_path=json_target, csv_path=csv_target)
 
             if inp is not None:
                 state.set("waiting for html", "")
                 async for record in inp:
+                    if record.profile_url in seen_urls:
+                        continue
+                    seen_urls.add(record.profile_url)
                     state.set("parsing", record.profile_url)
                     state.requests += 1
                     self._bump_total(pbar)
                     await self._parse_record(record, results, metrics, out)
                     pbar.update(1)
                     state.set("waiting for html", "")
+                    if json_target and len(results) > 0 and len(results) % self.config.checkpoint_flush_every == 0:
+                        self.exporter.export(results, json_path=json_target, csv_path=csv_target)
         finally:
             state.set("idle", "")
             self._close_bar(pbar)
@@ -1039,14 +1080,14 @@ class ScraperOrchestrator:
 
         self.exporter.export(
             results,
-            json_path=self.config.resolve_path("profiles_json"),
-            csv_path=self.config.resolve_path("profiles_csv"),
+            json_path=json_target,
+            csv_path=csv_target,
         )
 
         metrics.duration_seconds = time.monotonic() - start_time
         self.registry.register(metrics)
         print_phase_stats("Parse", metrics.profiles_parsed, metrics.parse_success, metrics.parse_failed, metrics)
-        print_completion_paths(self.config.resolve_path("profiles_json"), self.config.resolve_path("profiles_csv"), len(results))
+        print_completion_paths(json_target, csv_target, len(results))
 
         log.info(f"Parse complete. {len(results)} profiles parsed successfully.")
         return results
@@ -1061,6 +1102,9 @@ class ScraperOrchestrator:
         profile = await asyncio.to_thread(
             self.parser.parse_profile, record.html, record.profile_url, record.portfolio_html
         )
+        if profile is not None:
+            StrictZeroNullValidator.validate_profile(profile, html=record.html)
+
         if profile and profile.name != "Unknown":
             metrics.increment("parse_success")
             if profile.portfolio_count:
@@ -1092,10 +1136,41 @@ class ScraperOrchestrator:
     # ------------------------------------------------------------------
     # Composite: Deep Scrape (Fetch + Parse), kept for convenience/back-compat
     # ------------------------------------------------------------------
-    async def run_deep_scrape(self, limit: Optional[int] = None, use_continue: bool = True) -> List[ProfileDetails]:
-        """Convenience wrapper chaining Phase 3 (Fetch) and Phase 4 (Parse)."""
-        await self.run_fetch(limit=limit, use_continue=use_continue)
-        return await self.stream_parse(None, NullChannel(), use_continue=use_continue)
+    async def run_deep_scrape(self, limit: Optional[int] = None, use_continue: bool = True,
+                               output_json: Optional[str] = None, output_csv: Optional[str] = None,
+                               input_path: Optional[str] = None) -> List[ProfileDetails]:
+        """Convenience wrapper chaining Phase 3 (Fetch) and Phase 4 (Parse) concurrently via Channel."""
+        channel = Channel(name="fetch->parse", maxsize=200)
+
+        fetch_task = asyncio.create_task(
+            self.stream_fetch(None, channel, limit=limit, use_continue=use_continue, input_path=input_path)
+        )
+        parse_task = asyncio.create_task(
+            self.stream_parse(channel, NullChannel(), use_continue=use_continue,
+                              output_json=output_json, output_csv=output_csv)
+        )
+
+        try:
+            done, pending = await asyncio.wait([fetch_task, parse_task], return_when=asyncio.FIRST_EXCEPTION)
+            for t in done:
+                if not t.cancelled() and t.exception():
+                    for p in pending:
+                        p.cancel()
+                    raise t.exception()
+            if pending:
+                await asyncio.gather(*pending)
+            return parse_task.result()
+        except BaseException:
+            for t in [fetch_task, parse_task]:
+                if not t.done():
+                    t.cancel()
+            await asyncio.gather(fetch_task, parse_task, return_exceptions=True)
+            raise
+        finally:
+            try:
+                await channel.close()
+            except Exception:
+                pass
 
     def print_session_summary(self) -> None:
         """Print an aggregated report across every phase run in this session."""

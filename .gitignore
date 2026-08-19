@@ -12,3 +12,4 @@ uploads/*
 outsource/*
 outsourcing/*
 downloads/*
+*.jsonl

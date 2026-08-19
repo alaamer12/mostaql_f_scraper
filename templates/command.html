@@ -14,7 +14,10 @@
                 Drag &amp; drop a JSON file here, or click to browse
                 <input type="file" id="file-input" accept=".json" style="display:none;">
             </div>
-            <input type="hidden" id="uploaded_path" name="{{ cmd.file_field }}" value="">
+            <div style="margin-top:8px;">
+                <label style="font-size:12px; color:#666;">Or enter file path / leave blank for default:</label>
+                <input class="mui-textfield" type="text" id="uploaded_path" name="{{ cmd.file_field }}" value="" placeholder="e.g. collected/mostaql_development_all_users.json">
+            </div>
             <input type="hidden" id="upload_run_id" name="upload_run_id" value="">
             <div id="upload-status" style="font-size:12px; color:#4caf50; margin-top:4px;"></div>
         </div>
@@ -113,13 +116,17 @@ if (dropZone) {
 async function uploadFile(file) {
     const formData = new FormData();
     formData.append('file', file);
-    document.getElementById('upload-status').innerText = 'Uploading...';
+    document.getElementById('upload-status').innerText = 'Uploading ' + file.name + '...';
     try {
         const resp = await fetch('/api/upload', { method: 'POST', body: formData });
         const data = await resp.json();
-        document.getElementById('uploaded_path').value = data.path;
-        document.getElementById('upload_run_id').value = data.run_id || '';
-        document.getElementById('upload-status').innerText = 'Uploaded: ' + data.name;
+        if (resp.ok) {
+            document.getElementById('uploaded_path').value = data.path;
+            document.getElementById('upload_run_id').value = data.run_id || '';
+            document.getElementById('upload-status').innerText = 'Uploaded: ' + data.name + ' (' + data.path + ')';
+        } else {
+            document.getElementById('upload-status').innerText = 'Upload failed: ' + (data.detail || 'Server error');
+        }
     } catch (e) {
         document.getElementById('upload-status').innerText = 'Upload failed: ' + e;
     }

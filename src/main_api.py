@@ -296,13 +296,18 @@ async def run_scraper_task(command: str, **kwargs) -> None:
                 output_csv=resolved_args.get("output_csv"),
             )
         elif command == "fetch":
-            await orchestrator.run_fetch(limit=kwargs.get("limit"), use_continue=use_continue)
+            await orchestrator.run_fetch(
+                limit=kwargs.get("limit"),
+                use_continue=use_continue,
+                input_path=kwargs.get("input_file"),
+            )
         elif command == "deep_scrape":
             await orchestrator.run_deep_scrape(
                 limit=kwargs.get("limit"),
                 use_continue=use_continue,
                 output_json=resolved_args.get("profiles_json"),
                 output_csv=resolved_args.get("profiles_csv"),
+                input_path=kwargs.get("input_file"),
             )
         elif command == "followup":
             followup_channel = Channel(name="followup")
@@ -421,8 +426,8 @@ COMMANDS: List[Dict[str, Any]] = [
         "slug": "fetch",
         "title": "Fetch",
         "description": "Download raw profile + portfolio HTML and cache it to disk, without parsing.",
-        "needs_file": False,
-        "file_field": None,
+        "needs_file": True,
+        "file_field": "input_file",
         "output_attrs": ["raw_html_json", "checkpoint_fetch_json"],
         "fields": [
             {"name": "limit", "label": "Limit (--limit, cap profile URLs fetched this run)", "type": "number", "default": None, "placeholder": "e.g. 50"},
@@ -433,8 +438,8 @@ COMMANDS: List[Dict[str, Any]] = [
         "slug": "deep_scrape",
         "title": "Deep Scrape",
         "description": "Convenience wrapper chaining Fetch and Parse phases.",
-        "needs_file": False,
-        "file_field": None,
+        "needs_file": True,
+        "file_field": "input_file",
         "output_attrs": ["raw_html_json", "checkpoint_fetch_json", "profiles_json", "profiles_csv"],
         "fields": [
             {"name": "profiles_json", "label": "Profiles JSON (--profiles-json, optional custom path)", "type": "text", "default": None, "placeholder": "e.g. mostaql_profiles.json"},
@@ -683,10 +688,12 @@ async def run_command(slug: str, request: Request):
         kwargs["profiles_json"] = str(payload["profiles_json"]).strip()
     if payload.get("profiles_csv"):
         kwargs["profiles_csv"] = str(payload["profiles_csv"]).strip()
-    if cmd["needs_file"]:
-        input_file = payload.get(cmd["file_field"])
-        if input_file:
-            kwargs["input_file"] = input_file
+    if cmd.get("needs_file"):
+        input_file = payload.get(cmd.get("file_field") or "input_file")
+        if input_file and str(input_file).strip():
+            kwargs["input_file"] = str(input_file).strip()
+    elif "input_file" in payload and str(payload["input_file"]).strip():
+        kwargs["input_file"] = str(payload["input_file"]).strip()
     # If the input file was uploaded, reuse its uuid so this run's
     # outsourcing/<uuid>/{downloads,logs} share the folder with the
     # outsourcing/<uuid>/uploads/ file that was just used.
@@ -901,4 +908,5 @@ async def download_result(run_id: str, filename: str):
 if __name__ == "__main__":
     import uvicorn
     port = int(os.environ.get("PORT", 8000))
-    uvicorn.run(app, host="0.0.0.0", port=port)
+    host = os.environ.get("HOST", "127.0.0.1")
+    uvicorn.run(app, host=host, port=port)

@@ -35,11 +35,9 @@ cp .env.example .env
 #### 2. Running the API Server
 The primary entry point starts a FastAPI server:
 ```bash
-python main.py
-```
-Or use `uvicorn` directly:
-```bash
-uvicorn src.main_api:app --host 0.0.0.0 --port 8000
+uv run start
+# Or with uvicorn directly:
+uvicorn src.main_api:app --host 127.0.0.1 --port 8000
 ```
 
 #### 3. Web UI (one page per command)

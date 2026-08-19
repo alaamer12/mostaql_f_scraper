@@ -7,9 +7,28 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from main import app  # noqa: E402
+import typer
 from src.pipeline import cli_chain  # noqa: E402
 from src.pipeline.spec import STAGE_REGISTRY, StagePosition  # noqa: E402
+
+# Build Typer app for testing CLI chain parsing
+app = typer.Typer()
+
+@app.command()
+def discovery(new: bool = False):
+    pass
+
+@app.command()
+def extract(new: bool = False, limit: int = None):
+    pass
+
+@app.command()
+def fetch(limit: int = None, resume: bool = True):
+    pass
+
+@app.command()
+def parse(resume: bool = True):
+    pass
 
 
 def _chain(*argv):

@@ -6,6 +6,7 @@ from typing import Any, Iterable, List, Optional, Sequence, Union
 from pathlib import Path
 
 from .storage import StorageService
+from ..utils.validators import StrictZeroNullValidator
 
 log = logging.getLogger(__name__)
 
@@ -23,7 +24,12 @@ class ExporterService:
         self.storage = storage or StorageService()
 
     def _to_records(self, items: Sequence[Any]) -> List[dict]:
-        return [asdict(item) if is_dataclass(item) else dict(item) for item in items]
+        records = []
+        for item in items:
+            rec = asdict(item) if is_dataclass(item) else dict(item)
+            StrictZeroNullValidator.validate_record_dict(rec)
+            records.append(rec)
+        return records
 
     def export(
         self,

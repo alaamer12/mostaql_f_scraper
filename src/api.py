@@ -50,6 +50,11 @@ class Pipeline:
         resume: bool = True,
         deep: bool = False,
         limit: Optional[int] = None,
+        input_file: Optional[str] = None,
+        output_json: Optional[str] = None,
+        output_csv: Optional[str] = None,
+        profiles_json: Optional[str] = None,
+        profiles_csv: Optional[str] = None,
         sample: bool = False,
         chain: Optional[Sequence[Union[Commands, str]]] = None,
         live_display: bool = False,
@@ -62,6 +67,11 @@ class Pipeline:
             resume: Resume from existing cache/checkpoints (default: True).
             deep: Run deep scrape (fetch + parse) in composite commands.
             limit: Optional cap on the number of profiles processed.
+            input_file: Optional path to input JSON file (e.g. users list for fetch/deep_scrape/followup/fixup).
+            output_json: Optional custom path for extracted users JSON.
+            output_csv: Optional custom path for extracted users CSV.
+            profiles_json: Optional custom path for parsed profiles JSON.
+            profiles_csv: Optional custom path for parsed profiles CSV.
             sample: Run live sample smoke test (for sample command).
             chain: Optional sequence of stages for concurrent pipelined execution.
             live_display: Enable rich live multi-bar display during pipelined run.
@@ -80,30 +90,50 @@ class Pipeline:
             return res
 
         elif cmd_str == Commands.EXTRACT:
-            res = asyncio.run(self.orchestrator.run_extraction(use_continue=resume and not new))
+            res = asyncio.run(self.orchestrator.run_extraction(
+                use_continue=resume and not new,
+                output_json=output_json,
+                output_csv=output_csv,
+            ))
             self.orchestrator.print_session_summary()
             return res
 
         elif cmd_str == Commands.FETCH:
-            res = asyncio.run(self.orchestrator.run_fetch(limit=limit, use_continue=resume))
+            res = asyncio.run(self.orchestrator.run_fetch(limit=limit, use_continue=resume, input_path=input_file))
             self.orchestrator.print_session_summary()
             return res
 
         elif cmd_str == Commands.PARSE:
-            res = self.orchestrator.run_parse(use_continue=resume)
+            res = self.orchestrator.run_parse(use_continue=resume, output_json=profiles_json, output_csv=profiles_csv)
             self.orchestrator.print_session_summary()
             return res
 
         elif cmd_str == Commands.DEEP_SCRAPE:
-            res = asyncio.run(self.orchestrator.run_deep_scrape(limit=limit, use_continue=resume))
+            res = asyncio.run(self.orchestrator.run_deep_scrape(
+                limit=limit,
+                use_continue=resume,
+                output_json=profiles_json,
+                output_csv=profiles_csv,
+                input_path=input_file,
+            ))
             self.orchestrator.print_session_summary()
             return res
 
         elif cmd_str == Commands.SCRAPE:
             asyncio.run(self.orchestrator.run_discovery(use_continue=not new))
-            asyncio.run(self.orchestrator.run_extraction(use_continue=not new))
+            asyncio.run(self.orchestrator.run_extraction(
+                use_continue=not new,
+                output_json=output_json,
+                output_csv=output_csv,
+            ))
             if deep:
-                asyncio.run(self.orchestrator.run_deep_scrape(limit=limit, use_continue=resume))
+                asyncio.run(self.orchestrator.run_deep_scrape(
+                    limit=limit,
+                    use_continue=resume,
+                    output_json=profiles_json,
+                    output_csv=profiles_csv,
+                    input_path=output_json,
+                ))
             self.orchestrator.print_session_summary()
             return True
 
