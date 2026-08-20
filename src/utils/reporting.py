@@ -29,6 +29,7 @@ def metric_field(default=0, overlappable: bool = True):
 class PhaseMetrics:
     """Thread-safe metrics container shared by every phase."""
     phase_name: str = ""
+    start_time: float = field(default_factory=time.monotonic, repr=False, compare=False)
 
     # Network stats - shared/cumulative across all phases.
     requests: int = metric_field(overlappable=True)
@@ -106,9 +107,83 @@ class PhaseMetrics:
 
     def get_throughput(self, count: int) -> float:
         """Items processed per second, based on ``duration_seconds``."""
-        if self.duration_seconds <= 0:
+        duration = self.duration_seconds if self.duration_seconds > 0 else max(0.0, time.monotonic() - getattr(self, "start_time", time.monotonic()))
+        if duration <= 0:
             return 0.0
-        return count / self.duration_seconds
+        return count / duration
+
+    def to_dict(self) -> dict:
+        """Serialize current metrics snapshot for API reporting and real-time dashboard."""
+        is_completed = self.duration_seconds > 0
+        duration = self.duration_seconds if is_completed else max(0.0, time.monotonic() - getattr(self, "start_time", time.monotonic()))
+
+        d = {
+            "status": "completed" if is_completed else "running",
+            "duration_seconds": round(duration, 2),
+        }
+
+        # Network stats
+        if self.requests > 0:
+            d["requests"] = self.requests
+        if self.retries > 0:
+            d["retries"] = self.retries
+        if self.rate_limit_hits > 0:
+            d["rate_limit_hits"] = self.rate_limit_hits
+        if self.errors > 0:
+            d["errors"] = self.errors
+        if self.not_found_404 > 0:
+            d["not_found_404"] = self.not_found_404
+        if self.bytes_downloaded > 0:
+            d["bytes_downloaded"] = self.bytes_downloaded
+
+        # Phase-specific metrics based on phase name
+        name = self.phase_name.lower()
+        if "discovery" in name:
+            d["combos_processed"] = self.combos_processed
+            d["pages_found"] = self.pages_found
+            if self.empty_combos > 0:
+                d["empty_combos"] = self.empty_combos
+            if self.max_pages_seen > 0:
+                d["max_pages_seen"] = self.max_pages_seen
+        elif "extract" in name or "url" in name:
+            d["urls_discovered"] = self.urls_discovered
+            d["pages_scraped"] = self.pages_scraped
+            if self.duplicate_urls_skipped > 0:
+                d["duplicate_urls_skipped"] = self.duplicate_urls_skipped
+            if self.unknown_names > 0:
+                d["unknown_names"] = self.unknown_names
+        elif "fetch" in name:
+            d["profiles_fetched"] = self.profiles_fetched
+            d["portfolios_fetched"] = self.portfolios_fetched
+            d["fetch_failed"] = self.fetch_failed
+            if self.portfolio_fetch_failed > 0:
+                d["portfolio_fetch_failed"] = self.portfolio_fetch_failed
+            if self.skipped_resumed > 0:
+                d["skipped_resumed"] = self.skipped_resumed
+        elif "parse" in name:
+            d["profiles_parsed"] = self.profiles_parsed
+            d["parse_success"] = self.parse_success
+            d["parse_failed"] = self.parse_failed
+            d["portfolios_parsed"] = self.portfolios_parsed
+            if self.fields_missing > 0:
+                d["fields_missing"] = self.fields_missing
+        elif "fixup" in name:
+            d["fixup_success"] = self.fixup_success
+            d["fixup_failed"] = self.fixup_failed
+        elif "followup" in name:
+            d["names_extracted"] = self.urls_discovered
+
+        # Also populate any other non-zero fields
+        for f in fields(self):
+            fname = f.name
+            if fname in ("phase_name", "_lock", "duration_seconds", "start_time", "requests", "retries", "rate_limit_hits", "errors", "not_found_404", "retry_wait_seconds", "bytes_downloaded"):
+                continue
+            if fname not in d:
+                val = getattr(self, fname)
+                if val is not None and val != 0:
+                    d[fname] = val
+
+        return d
 
 
 class MetricsRegistry:
@@ -117,13 +192,21 @@ class MetricsRegistry:
     def __init__(self) -> None:
         self._phases: List[PhaseMetrics] = []
         self._order: List[str] = []
+        self._lock = threading.Lock()
 
     def register(self, metrics: PhaseMetrics) -> None:
-        self._phases.append(metrics)
+        with self._lock:
+            if metrics not in self._phases:
+                self._phases.append(metrics)
+
+    def clear(self) -> None:
+        with self._lock:
+            self._phases.clear()
 
     def set_order(self, stage_names: Sequence[str]) -> None:
         """Report phases in pipeline order rather than completion order."""
-        self._order = [name.lower() for name in stage_names]
+        with self._lock:
+            self._order = [name.lower() for name in stage_names]
 
     def _order_key(self, metrics: PhaseMetrics) -> int:
         name = metrics.phase_name.lower()
@@ -134,9 +217,10 @@ class MetricsRegistry:
 
     @property
     def phases(self) -> List[PhaseMetrics]:
-        if not self._order:
-            return list(self._phases)
-        return sorted(self._phases, key=self._order_key)
+        with self._lock:
+            if not self._order:
+                return list(self._phases)
+            return sorted(self._phases, key=self._order_key)
 
     def print_aggregate(self) -> None:
         """Print a combined summary across all phases run in this session."""

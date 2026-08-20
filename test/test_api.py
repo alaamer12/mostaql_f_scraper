@@ -193,3 +193,162 @@ def test_concurrent_deep_scrape_with_seeded_checkpoint(tmp_path):
     assert out_csv.exists()
     saved = orch.storage.load_json(str(out_profiles))
     assert len(saved) == 10
+
+
+def test_main_api_deep_scrape_command_and_results(tmp_path):
+    import json
+    import asyncio
+    from src.main_api import run_scraper_task, list_results, COMMANDS_BY_SLUG, RUN_HISTORY
+
+    # Create a temporary input file
+    input_users = tmp_path / "mostaql_users.json"
+    input_users.write_text(json.dumps([
+        {"name": "Alice", "profile_url": "https://mostaql.com/u/alice_test_user", "title": "Developer"}
+    ]), encoding="utf-8")
+
+    # Verify deep_scrape output attributes only list actual profiles outputs
+    deep_spec = COMMANDS_BY_SLUG.get("deep_scrape")
+    assert deep_spec["output_attrs"] == ["profiles_json", "profiles_csv"]
+
+    # Verify scrape output attrs
+    scrape_spec = COMMANDS_BY_SLUG.get("scrape")
+    assert "pagination_cache" not in scrape_spec["output_attrs"]
+    assert "profiles_json" in scrape_spec["output_attrs"]
+
+    # Test list_results
+    results_dict = asyncio.run(list_results())
+    assert "files" in results_dict
+    assert isinstance(results_dict["files"], list)
+
+
+def test_history_directory_tree_and_download(tmp_path, monkeypatch):
+    import os
+    import time
+    import asyncio
+    import pytest
+    from fastapi import HTTPException
+    import src.main_api as api_mod
+    from src.main_api import _build_directory_tree, get_history_tree, download_history_file
+
+    mock_outsource = tmp_path / "mock_outsourcing"
+    mock_outsource.mkdir()
+    monkeypatch.setattr(api_mod, "OUTSOURCE_DIR", str(mock_outsource))
+
+    # Create run 1 (older)
+    run1 = mock_outsource / "run_old"
+    run1.mkdir()
+    r1_dl = run1 / "downloads"
+    r1_dl.mkdir()
+    (r1_dl / "users_old.json").write_text('{"count": 5}', encoding="utf-8")
+    (r1_dl / "users_old.csv").write_text('id,name\n1,test', encoding="utf-8")
+
+    # Set mtime for run1 to be older
+    os.utime(str(run1), (1000000, 1000000))
+
+    # Create run 2 (newer)
+    run2 = mock_outsource / "run_new"
+    run2.mkdir()
+    r2_dl = run2 / "downloads"
+    r2_dl.mkdir()
+    (r2_dl / "profiles.json").write_text('{"profiles": 10}', encoding="utf-8")
+    r2_logs = run2 / "logs"
+    r2_logs.mkdir()
+    (r2_logs / "run.log").write_text('info log line', encoding="utf-8")
+
+    os.utime(str(run2), (2000000, 2000000))
+
+    # Call get_history_tree
+    tree_res = asyncio.run(get_history_tree())
+    assert tree_res["exists"] is True
+    assert tree_res["total_folders"] == 2
+    assert tree_res["total_files"] == 4
+
+    # Validate sorting: run_new should come before run_old (latest first)
+    top_folders = [c["name"] for c in tree_res["tree"] if c["type"] == "directory"]
+    assert top_folders == ["run_new", "run_old"]
+
+    # Validate run_new node file count badge
+    run_new_node = [c for c in tree_res["tree"] if c["name"] == "run_new"][0]
+    assert run_new_node["file_count"] == 2 # 1 in downloads, 1 in logs
+    assert len(run_new_node["children"]) == 2
+
+    # Validate run_old node file count badge
+    run_old_node = [c for c in tree_res["tree"] if c["name"] == "run_old"][0]
+    assert run_old_node["file_count"] == 2 # 2 in downloads
+
+    # Test download valid file
+    res = asyncio.run(download_history_file(path="run_new/downloads/profiles.json"))
+    assert res.filename == "profiles.json"
+    assert os.path.exists(res.path)
+
+    # Test path traversal attack blocked
+    with pytest.raises(HTTPException) as exc_info:
+        asyncio.run(download_history_file(path="../../main.py"))
+    assert exc_info.value.status_code == 403
+
+    # Test non-existent file returns 404
+    with pytest.raises(HTTPException) as exc_info404:
+        asyncio.run(download_history_file(path="run_new/downloads/non_existent.json"))
+    assert exc_info404.value.status_code == 404
+
+
+def test_phase_metrics_live_reporting_and_api_stats():
+    import asyncio
+    from src.utils.reporting import PhaseMetrics, MetricsRegistry
+    from src.main_api import get_stats, orchestrator
+
+    # Test PhaseMetrics to_dict while running
+    metrics = PhaseMetrics(phase_name="Discovery")
+    metrics.increment("combos_processed", 5)
+    metrics.increment("pages_found", 12)
+    metrics.increment("requests", 10)
+
+    dict_running = metrics.to_dict()
+    assert dict_running["status"] == "running"
+    assert dict_running["combos_processed"] == 5
+    assert dict_running["pages_found"] == 12
+    assert dict_running["requests"] == 10
+    assert "duration_seconds" in dict_running
+
+    # Test completed phase metrics
+    metrics.duration_seconds = 4.5
+    dict_completed = metrics.to_dict()
+    assert dict_completed["status"] == "completed"
+    assert dict_completed["duration_seconds"] == 4.5
+
+    # Test registry integration with /api/stats
+    orchestrator.registry.clear()
+    orch_metrics = PhaseMetrics(phase_name="Fetch")
+    orch_metrics.increment("profiles_fetched", 20)
+    orchestrator.registry.register(orch_metrics)
+
+    stats = asyncio.run(get_stats())
+    assert "metrics" in stats
+    assert "phases" in stats["metrics"]
+    assert "Fetch" in stats["metrics"]["phases"]
+    assert stats["metrics"]["phases"]["Fetch"]["profiles_fetched"] == 20
+    assert stats["metrics"]["phases"]["Fetch"]["status"] == "running"
+
+
+def test_task_status_timing_in_stats():
+    import asyncio
+    import time
+    from src.main_api import get_stats, scrape_status
+
+    scrape_status.is_running = True
+    scrape_status.current_command = "deep_scrape"
+    scrape_status.started_at = time.time() - 5.5
+    scrape_status.duration_seconds = 0.0
+
+    stats = asyncio.run(get_stats())
+    assert stats["task_status"]["is_running"] is True
+    assert stats["task_status"]["current_command"] == "deep_scrape"
+    assert stats["task_status"]["started_at"] is not None
+    assert stats["task_status"]["duration_seconds"] >= 5.0
+
+    # Test completed task duration
+    scrape_status.is_running = False
+    scrape_status.duration_seconds = 12.34
+    stats_done = asyncio.run(get_stats())
+    assert stats_done["task_status"]["is_running"] is False
+    assert stats_done["task_status"]["duration_seconds"] == 12.34

@@ -113,6 +113,7 @@ class ScraperOrchestrator:
         them as KeywordItem milestones for downstream extraction.
         """
         metrics = PhaseMetrics(phase_name="Followup")
+        self.registry.register(metrics)
         start_time = time.monotonic()
         actual_input_path = input_path or self.config.resolve_path("followup_input")
         log.info(f"Starting Followup Phase from {actual_input_path}...")
@@ -176,6 +177,7 @@ class ScraperOrchestrator:
         Scans existing records for missing titles or ranks and re-fetches them.
         """
         metrics = PhaseMetrics(phase_name="Fixup")
+        self.registry.register(metrics)
         start_time = time.monotonic()
         actual_input_path = input_path or self.config.resolve_path("output_json")
         log.info(f"Starting Fixup Phase from {actual_input_path}...")
@@ -322,6 +324,7 @@ class ScraperOrchestrator:
         start scraping listing pages long before discovery completes.
         """
         metrics = PhaseMetrics(phase_name="Discovery")
+        self.registry.register(metrics)
         start_time = time.monotonic()
         self._header("Auto (Binary Search)", self.config.dir_concurrency, f"{self.config.discovery_rate_burst}/{self.config.discovery_rate_period}s per worker")
         log.info("Starting Discovery Phase...")
@@ -575,6 +578,7 @@ class ScraperOrchestrator:
         parses each one (main profile + portfolio).
         """
         metrics = PhaseMetrics(phase_name="Sample")
+        self.registry.register(metrics)
         start_time = time.monotonic()
         print_scraper_header("Sample", 1, f"{self.config.rate_limit_burst}/{self.config.rate_limit_period}s")
         log.info("Starting Sample smoke test...")
@@ -661,6 +665,7 @@ class ScraperOrchestrator:
         forwarded on ``out`` immediately.
         """
         metrics = PhaseMetrics(phase_name="URL Extraction")
+        self.registry.register(metrics)
         start_time = time.monotonic()
         
         # Detect mode based on input type if streaming
@@ -874,6 +879,7 @@ class ScraperOrchestrator:
         forwarded on ``out`` as a ``RawProfileRecord``.
         """
         metrics = PhaseMetrics(phase_name="Fetch")
+        self.registry.register(metrics)
         start_time = time.monotonic()
         self._header(limit or "All", self.config.profile_concurrency, f"{self.config.rate_limit_burst}/{self.config.rate_limit_period}s")
         log.info("Starting Fetch Phase...")
@@ -1017,6 +1023,7 @@ class ScraperOrchestrator:
         event loop responsive for the other stages.
         """
         metrics = PhaseMetrics(phase_name="Parse")
+        self.registry.register(metrics)
         start_time = time.monotonic()
         log.info("Starting Parse Phase...")
 

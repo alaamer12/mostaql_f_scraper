@@ -8,6 +8,7 @@ import asyncio
 import uuid
 import json
 from typing import Any, Dict, List, Optional
+from urllib.parse import quote, unquote
 
 from fastapi import FastAPI, BackgroundTasks, HTTPException, Request, UploadFile, File
 from fastapi.responses import FileResponse, RedirectResponse
@@ -44,6 +45,119 @@ def _outsource_subdir(run_id: str, subdir: str) -> str:
     path = os.path.join(OUTSOURCE_DIR, run_id, subdir)
     os.makedirs(path, exist_ok=True)
     return path
+
+
+def _format_size(bytes_num: int) -> str:
+    """Format bytes into human-readable string."""
+    if bytes_num < 1024:
+        return f"{bytes_num} B"
+    elif bytes_num < 1024 * 1024:
+        return f"{bytes_num / 1024:.1f} KB"
+    elif bytes_num < 1024 * 1024 * 1024:
+        return f"{bytes_num / (1024 * 1024):.1f} MB"
+    else:
+        return f"{bytes_num / (1024 * 1024 * 1024):.1f} GB"
+
+
+def _build_directory_tree(dir_path: str, base_dir: str, current_run_id: Optional[str] = None) -> Dict[str, Any]:
+    """Recursively scan a directory to build a structured tree node sorted latest to oldest."""
+    name = os.path.basename(dir_path)
+    rel_path = os.path.relpath(dir_path, base_dir).replace(os.sep, "/")
+    if rel_path == ".":
+        rel_path = ""
+
+    try:
+        stat_info = os.stat(dir_path)
+        mtime = stat_info.st_mtime
+    except Exception:
+        mtime = 0.0
+
+    mtime_str = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(mtime)) if mtime else ""
+
+    node: Dict[str, Any] = {
+        "name": name,
+        "path": rel_path,
+        "type": "directory",
+        "mtime": mtime,
+        "mtime_str": mtime_str,
+        "is_current": bool(current_run_id and (name == current_run_id or (rel_path and rel_path.startswith(current_run_id)))),
+        "children": [],
+        "file_count": 0,
+        "direct_file_count": 0,
+        "total_size": 0,
+        "size_str": "0 B",
+    }
+
+    try:
+        entries = os.listdir(dir_path)
+    except Exception:
+        return node
+
+    subdirs = []
+    files = []
+
+    for entry in entries:
+        full_entry_path = os.path.join(dir_path, entry)
+        if os.path.isdir(full_entry_path):
+            subdirs.append(full_entry_path)
+        elif os.path.isfile(full_entry_path):
+            files.append(full_entry_path)
+
+    # Sort subdirectories by mtime descending (latest first)
+    subdirs.sort(key=lambda p: os.path.getmtime(p) if os.path.exists(p) else 0.0, reverse=True)
+    # Sort files by mtime descending (latest first)
+    files.sort(key=lambda p: os.path.getmtime(p) if os.path.exists(p) else 0.0, reverse=True)
+
+    total_files = 0
+    direct_files = 0
+    total_size = 0
+
+    # Process child directories
+    for sdir in subdirs:
+        child_node = _build_directory_tree(sdir, base_dir, current_run_id)
+        node["children"].append(child_node)
+        total_files += child_node["file_count"]
+        total_size += child_node["total_size"]
+
+    # Process child files
+    for fpath in files:
+        fname = os.path.basename(fpath)
+        f_rel_path = os.path.relpath(fpath, base_dir).replace(os.sep, "/")
+        try:
+            f_stat = os.stat(fpath)
+            f_size = f_stat.st_size
+            f_mtime = f_stat.st_mtime
+        except Exception:
+            f_size = 0
+            f_mtime = 0.0
+
+        ext = os.path.splitext(fname)[1].lstrip(".").lower()
+        f_mtime_str = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(f_mtime)) if f_mtime else ""
+
+        encoded_path = quote(f_rel_path, safe="")
+        file_node = {
+            "name": fname,
+            "path": f_rel_path,
+            "type": "file",
+            "extension": ext,
+            "size": f_size,
+            "size_str": _format_size(f_size),
+            "mtime": f_mtime,
+            "mtime_str": f_mtime_str,
+            "download_url": f"/api/history/download?path={encoded_path}",
+            "is_current": bool(current_run_id and current_run_id in f_rel_path),
+        }
+        node["children"].append(file_node)
+        total_files += 1
+        direct_files += 1
+        total_size += f_size
+
+    node["file_count"] = total_files
+    node["direct_file_count"] = direct_files
+    node["total_size"] = total_size
+    node["size_str"] = _format_size(total_size)
+
+    return node
 
 # ----------------------------------------------------------------------
 # Logging: keep the last 50 lines in memory so the web UI can show them.
@@ -118,6 +232,7 @@ class ProgressState:
     def __init__(self) -> None:
         self.active_bars: Dict[int, "TrackedBar"] = {}
         self.snapshot_count = 0
+        self.last_completed: Optional[Dict[str, Any]] = None
 
     def debug_dump(self) -> Dict[str, Any]:
         """Raw, unfiltered view of every live bar (for /api/debug/progress)."""
@@ -145,6 +260,14 @@ class ProgressState:
         self.snapshot_count += 1
         sorted_bars = sorted(self.active_bars.values(), key=lambda b: b.created_at)
         if not sorted_bars:
+            if self.last_completed:
+                return {
+                    "desc": self.last_completed.get("desc"),
+                    "n": self.last_completed.get("n", 0),
+                    "total": self.last_completed.get("total"),
+                    "sub_bars": [],
+                    "debug": self.debug_dump(),
+                }
             _dbg("snapshot: NO active bars (nothing registered a progress bar yet)")
             return {"desc": None, "n": 0, "total": None, "sub_bars": []}
 
@@ -198,6 +321,11 @@ class TrackedBar:
     def close(self) -> None:
         _dbg(f"bar CLOSED id={self.id} desc={self.desc!r} final n={self.n} total={self.total} "
              f"updates={self.update_count}")
+        progress_state.last_completed = {
+            "desc": self.desc,
+            "n": round(self.n, 2),
+            "total": self.total,
+        }
         if self.id in progress_state.active_bars:
             del progress_state.active_bars[self.id]
 
@@ -214,6 +342,8 @@ class TaskStatus(BaseModel):
     current_run_id: Optional[str] = None
     current_output_files: List[str] = []
     last_run_at: Optional[str] = None
+    started_at: Optional[float] = None
+    duration_seconds: Optional[float] = None
     error: Optional[str] = None
 
 # Track recent runs for the results list
@@ -241,6 +371,8 @@ async def run_scraper_task(command: str, **kwargs) -> None:
     scrape_status.current_command = command
     scrape_status.current_run_id = run_id
     scrape_status.current_output_files = []
+    scrape_status.started_at = time.time()
+    scrape_status.duration_seconds = 0.0
 
     # Helper to resolve output path within the unique run directory
     def resolve_run_path(val: Optional[str], default_attr: str) -> str:
@@ -263,7 +395,11 @@ async def run_scraper_task(command: str, **kwargs) -> None:
     # We'll map the UI kwargs to their resolved paths in run_dir
     resolved_args = kwargs.copy()
     
-    for attr in cmd_spec.get("output_attrs", []):
+    raw_output_attrs = list(cmd_spec.get("output_attrs", []))
+    if command == "scrape" and not kwargs.get("deep"):
+        raw_output_attrs = [a for a in raw_output_attrs if "profiles" not in a]
+
+    for attr in raw_output_attrs:
         short_name = "output_json" if "output_json" in attr else ("output_csv" if "output_csv" in attr else attr)
         # Check if it's one of the profile ones
         if "profiles_json" in attr: short_name = "profiles_json"
@@ -279,6 +415,7 @@ async def run_scraper_task(command: str, **kwargs) -> None:
     scrape_status.error = None
     progress_state.active_bars.clear()
     WORKERS.clear()
+    orchestrator.registry.clear()
 
     try:
         log.info(f"Starting background task: {command} with args {kwargs}")
@@ -296,18 +433,40 @@ async def run_scraper_task(command: str, **kwargs) -> None:
                 output_csv=resolved_args.get("output_csv"),
             )
         elif command == "fetch":
+            input_file = kwargs.get("input_file")
+            if not input_file:
+                default_inp = config.resolve_path("output_json")
+                if not os.path.exists(default_inp):
+                    for run in reversed(RUN_HISTORY):
+                        for f in run.get("files", []):
+                            if f.endswith(".json") and "user" in os.path.basename(f).lower() and os.path.exists(f):
+                                input_file = f
+                                break
+                        if input_file:
+                            break
             await orchestrator.run_fetch(
                 limit=kwargs.get("limit"),
                 use_continue=use_continue,
-                input_path=kwargs.get("input_file"),
+                input_path=input_file,
             )
         elif command == "deep_scrape":
+            input_file = kwargs.get("input_file")
+            if not input_file:
+                default_inp = config.resolve_path("output_json")
+                if not os.path.exists(default_inp):
+                    for run in reversed(RUN_HISTORY):
+                        for f in run.get("files", []):
+                            if f.endswith(".json") and "user" in os.path.basename(f).lower() and os.path.exists(f):
+                                input_file = f
+                                break
+                        if input_file:
+                            break
             await orchestrator.run_deep_scrape(
                 limit=kwargs.get("limit"),
                 use_continue=use_continue,
                 output_json=resolved_args.get("profiles_json"),
                 output_csv=resolved_args.get("profiles_csv"),
-                input_path=kwargs.get("input_file"),
+                input_path=input_file,
             )
         elif command == "followup":
             followup_channel = Channel(name="followup")
@@ -347,6 +506,7 @@ async def run_scraper_task(command: str, **kwargs) -> None:
                     use_continue=use_continue,
                     output_json=resolved_args.get("profiles_json"),
                     output_csv=resolved_args.get("profiles_csv"),
+                    input_path=resolved_args.get("output_json"),
                 )
 
         scrape_status.last_run_at = time.strftime("%Y-%m-%d %H:%M:%S")
@@ -368,6 +528,8 @@ async def run_scraper_task(command: str, **kwargs) -> None:
         log.exception(f"Error in background task {command}: {str(e)}")
         scrape_status.error = str(e)
     finally:
+        if scrape_status.started_at:
+            scrape_status.duration_seconds = round(max(0.0, time.time() - scrape_status.started_at), 2)
         scrape_status.is_running = False
         scrape_status.current_command = None
         CURRENT_TASK = None
@@ -384,7 +546,7 @@ COMMANDS: List[Dict[str, Any]] = [
         "description": "Run Discovery + URL Extraction, optionally followed by a Deep Scrape (Fetch + Parse).",
         "needs_file": False,
         "file_field": None,
-        "output_attrs": ["pagination_cache", "output_json", "output_csv", "profiles_json", "profiles_csv"],
+        "output_attrs": ["output_json", "output_csv", "profiles_json", "profiles_csv"],
         "fields": [
             {"name": "output_json", "label": "Output JSON (--output-json/-o, optional custom path)", "type": "text", "default": None, "placeholder": "e.g. mostaql_users.json"},
             {"name": "output_csv", "label": "Output CSV (--output-csv, optional custom path)", "type": "text", "default": None, "placeholder": "e.g. mostaql_users.csv"},
@@ -402,7 +564,7 @@ COMMANDS: List[Dict[str, Any]] = [
         "description": "Binary search over every filter combination to find its page count.",
         "needs_file": False,
         "file_field": None,
-        "output_attrs": ["pagination_cache"],
+        "output_attrs": [],
         "fields": [
             {"name": "new", "label": "Fresh run (--new: ignore pagination cache, re-run every combo from scratch)", "type": "checkbox", "default": False},
             {"name": "resume", "label": "Continue (--continue/--no-continue: reuse cached combo/page-count data)", "type": "checkbox", "default": True},
@@ -428,7 +590,7 @@ COMMANDS: List[Dict[str, Any]] = [
         "description": "Download raw profile + portfolio HTML and cache it to disk, without parsing.",
         "needs_file": True,
         "file_field": "input_file",
-        "output_attrs": ["raw_html_json", "checkpoint_fetch_json"],
+        "output_attrs": ["checkpoint_fetch_json"],
         "fields": [
             {"name": "limit", "label": "Limit (--limit, cap profile URLs fetched this run)", "type": "number", "default": None, "placeholder": "e.g. 50"},
             {"name": "resume", "label": "Continue (--continue/--no-continue: skip already-fetched profiles)", "type": "checkbox", "default": True},
@@ -440,7 +602,7 @@ COMMANDS: List[Dict[str, Any]] = [
         "description": "Convenience wrapper chaining Fetch and Parse phases.",
         "needs_file": True,
         "file_field": "input_file",
-        "output_attrs": ["raw_html_json", "checkpoint_fetch_json", "profiles_json", "profiles_csv"],
+        "output_attrs": ["profiles_json", "profiles_csv"],
         "fields": [
             {"name": "profiles_json", "label": "Profiles JSON (--profiles-json, optional custom path)", "type": "text", "default": None, "placeholder": "e.g. mostaql_profiles.json"},
             {"name": "profiles_csv", "label": "Profiles CSV (--profiles-csv, optional custom path)", "type": "text", "default": None, "placeholder": "e.g. mostaql_profiles.csv"},
@@ -538,17 +700,12 @@ async def command_page(slug: str, request: Request):
 @app.get("/api/stats")
 async def get_stats():
     """Returns current scraping progress and metrics (polled by every command page)."""
+    if scrape_status.is_running and scrape_status.started_at:
+        scrape_status.duration_seconds = round(max(0.0, time.time() - scrape_status.started_at), 2)
+
     phases_report = {}
     for phase in orchestrator.registry.phases:
-        phases_report[phase.phase_name] = {
-            "urls_discovered": phase.urls_discovered,
-            "profiles_fetched": phase.profiles_fetched,
-            "profiles_parsed": phase.profiles_parsed,
-            "parse_success": phase.parse_success,
-            "parse_failed": phase.parse_failed,
-            "errors": phase.errors,
-            "duration_seconds": round(phase.duration_seconds, 2),
-        }
+        phases_report[phase.phase_name] = phase.to_dict()
 
     progress = progress_state.snapshot()
 
@@ -844,6 +1001,36 @@ async def list_results():
             })
             seen_paths.add(abs_p)
 
+    # Priority 2.5: Any existing files on disk in OUTSOURCE_DIR
+    if os.path.exists(OUTSOURCE_DIR):
+        try:
+            subdirs = sorted(
+                [os.path.join(OUTSOURCE_DIR, d) for d in os.listdir(OUTSOURCE_DIR) if os.path.isdir(os.path.join(OUTSOURCE_DIR, d))],
+                key=lambda p: os.path.getmtime(p),
+                reverse=True
+            )
+            for sdir in subdirs:
+                r_id = os.path.basename(sdir)
+                dl_dir = os.path.join(sdir, "downloads")
+                if os.path.exists(dl_dir) and os.path.isdir(dl_dir):
+                    for fname in os.listdir(dl_dir):
+                        full_p = os.path.abspath(os.path.join(dl_dir, fname))
+                        if full_p not in seen_paths and os.path.isfile(full_p):
+                            rel_to_downloads = os.path.relpath(full_p, dl_dir)
+                            available_files.append({
+                                "name": os.path.basename(full_p),
+                                "display_name": rel_to_downloads.replace(os.sep, "/"),
+                                "path": full_p,
+                                "download_url": f"/results/download/{r_id}/{rel_to_downloads.replace(os.sep, '/')}",
+                                "size": os.path.getsize(full_p),
+                                "modified": os.path.getmtime(full_p),
+                                "exists": True,
+                                "is_current": (r_id == scrape_status.current_run_id)
+                            })
+                            seen_paths.add(full_p)
+        except Exception:
+            pass
+
     # Priority 3: Default files from config (only if they exist)
     default_paths = {
         config.resolve_path("output_json"),
@@ -889,18 +1076,72 @@ async def download_legacy_result(filename: str):
     raise HTTPException(status_code=404, detail="File not found.")
 
 
+@app.get("/api/history/tree")
+async def get_history_tree():
+    """Returns the full hierarchical directory tree of the outsourcing directory,
+    sorted by latest modification time first, with file counts, sizes, and download links."""
+    if not os.path.exists(OUTSOURCE_DIR):
+        return {
+            "root": "outsourcing",
+            "exists": False,
+            "total_folders": 0,
+            "total_files": 0,
+            "total_size": 0,
+            "size_str": "0 B",
+            "tree": []
+        }
+
+    tree_node = _build_directory_tree(OUTSOURCE_DIR, OUTSOURCE_DIR, scrape_status.current_run_id)
+    return {
+        "root": "outsourcing",
+        "exists": True,
+        "total_folders": len([c for c in tree_node["children"] if c["type"] == "directory"]),
+        "total_files": tree_node["file_count"],
+        "total_size": tree_node["total_size"],
+        "size_str": tree_node["size_str"],
+        "tree": tree_node["children"]
+    }
+
+
+@app.get("/api/history/download")
+@app.get("/api/history/download/{file_path:path}")
+async def download_history_file(file_path: Optional[str] = None, path: Optional[str] = None):
+    """Download a specific file from anywhere within the outsourcing directory."""
+    target = file_path or path
+    if not target:
+        raise HTTPException(status_code=400, detail="Path parameter required.")
+
+    # Prevent directory traversal attacks
+    target_clean = unquote(target).replace("\\", "/").lstrip("/")
+    abs_outsource = os.path.abspath(OUTSOURCE_DIR)
+    full_path = os.path.abspath(os.path.join(abs_outsource, target_clean))
+
+    if not full_path.startswith(abs_outsource):
+        raise HTTPException(status_code=403, detail="Access denied.")
+
+    if not os.path.exists(full_path) or not os.path.isfile(full_path):
+        raise HTTPException(status_code=404, detail="File not found.")
+
+    return FileResponse(path=full_path, filename=os.path.basename(full_path))
+
+
 @app.get("/results/download/{run_id}/{filename:path}")
 async def download_result(run_id: str, filename: str):
     """Download a specific result file from a unique run directory."""
-    run_downloads_dir = os.path.abspath(os.path.join(OUTSOURCE_DIR, run_id, "downloads"))
-    full_path = os.path.abspath(os.path.join(run_downloads_dir, filename))
+    run_dir = os.path.abspath(os.path.join(OUTSOURCE_DIR, run_id))
+    run_downloads_dir = os.path.abspath(os.path.join(run_dir, "downloads"))
+    
+    # Check in downloads directory first, then general run_dir
+    candidate_path = os.path.abspath(os.path.join(run_downloads_dir, filename))
+    if not (os.path.exists(candidate_path) and os.path.isfile(candidate_path)):
+        candidate_path = os.path.abspath(os.path.join(run_dir, filename))
 
-    # Security check: ensure path is inside this run's downloads directory
-    if not full_path.startswith(run_downloads_dir):
+    # Security check: ensure path is inside this run's directory
+    if not candidate_path.startswith(run_dir):
         raise HTTPException(status_code=403, detail="Access denied.")
 
-    if os.path.exists(full_path) and os.path.isfile(full_path):
-        return FileResponse(path=full_path, filename=os.path.basename(full_path))
+    if os.path.exists(candidate_path) and os.path.isfile(candidate_path):
+        return FileResponse(path=candidate_path, filename=os.path.basename(candidate_path))
 
     raise HTTPException(status_code=404, detail="File not found.")
 

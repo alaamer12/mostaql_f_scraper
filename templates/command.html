@@ -46,7 +46,13 @@
 
 <div class="mui-panel">
     <h3>2. Process</h3>
-    <div id="progress-desc" class="progress-desc">&nbsp;</div>
+    <div class="progress-header-row">
+        <div id="progress-desc" class="progress-desc">&nbsp;</div>
+        <div id="progress-time-badge" class="progress-time-badge idle">
+            <span class="time-icon">⏱</span>
+            <span id="progress-time-counter">Elapsed: 00:00 (0s)</span>
+        </div>
+    </div>
     <div class="progress-row">
         <div class="progress-outer">
             <div class="progress-inner" id="progress-bar" style="width:0%;"></div>
@@ -71,8 +77,24 @@
 </div>
 
 <div class="mui-panel">
-    <h3>4. Output <small>(available even before the process finishes)</small></h3>
-    <div id="output-section">No files yet.</div>
+    <h3>4. Output &amp; History <small>(outsourcing directory tree &bull; sorted latest to oldest)</small></h3>
+    <div class="history-tree-card">
+        <div class="tree-toolbar">
+            <div class="tree-toolbar-left">
+                <input type="text" id="tree-search-input" class="tree-search-input" placeholder="🔍 Search files / runs...">
+                <span id="tree-stats-badge" style="font-size:12px; color:#666;"></span>
+            </div>
+            <div class="tree-toolbar-right">
+                <button type="button" class="tree-btn" id="tree-expand-all">Expand All</button>
+                <button type="button" class="tree-btn" id="tree-collapse-all">Collapse All</button>
+                <button type="button" class="tree-btn" id="tree-refresh-btn" title="Refresh history">↻ Refresh</button>
+            </div>
+        </div>
+        <div id="history-tree-container" class="history-tree-root">
+            <div class="tree-empty">Loading history tree...</div>
+        </div>
+    </div>
+    <div id="output-section" style="display:none;"></div>
     <div id="overwrite-warning" class="warning-banner"></div>
 </div>
 
@@ -188,6 +210,10 @@ document.getElementById('run-form').addEventListener('submit', async (e) => {
         }
     }
 
+    RUN_START_TIME = Date.now() / 1000;
+    RUN_ACTIVE = true;
+    startLiveTimer();
+
     try {
         const resp = await fetch('/api/run/' + SLUG, {
             method: 'POST',
@@ -198,6 +224,8 @@ document.getElementById('run-form').addEventListener('submit', async (e) => {
         if (!resp.ok) {
             msg.style.color = '#f44336';
             msg.innerText = data.detail || 'Failed to start.';
+            RUN_ACTIVE = false;
+            stopLiveTimer(0);
         } else {
             msg.style.color = '#4caf50';
             msg.innerText = data.message;
@@ -205,6 +233,8 @@ document.getElementById('run-form').addEventListener('submit', async (e) => {
     } catch (err) {
         msg.style.color = '#f44336';
         msg.innerText = 'Error: ' + err;
+        RUN_ACTIVE = false;
+        stopLiveTimer(0);
     }
 });
 
@@ -214,6 +244,76 @@ document.getElementById('run-form').addEventListener('change', async (e) => {
     const result = await checkOverwrite(payload);
     renderOverwriteWarning(result);
 });
+
+// --- Time formatting helper & live timer manager ---
+let RUN_START_TIME = null;
+let RUN_ACTIVE = false;
+let TIMER_INTERVAL = null;
+
+function formatTimePassing(totalSeconds) {
+    if (totalSeconds === null || totalSeconds === undefined || isNaN(totalSeconds) || totalSeconds < 0) {
+        totalSeconds = 0;
+    }
+    const secRounded = Math.floor(totalSeconds);
+    const hrs = Math.floor(secRounded / 3600);
+    const mins = Math.floor((secRounded % 3600) / 60);
+    const secs = secRounded % 60;
+
+    const clock = (hrs > 0 ? (String(hrs).padStart(2, '0') + ':') : '') +
+                  String(mins).padStart(2, '0') + ':' +
+                  String(secs).padStart(2, '0');
+
+    let humanParts = [];
+    if (hrs > 0) humanParts.push(hrs + 'h');
+    if (mins > 0 || hrs > 0) humanParts.push(mins + 'm');
+    humanParts.push(secs + 's');
+    const human = humanParts.join(' ');
+
+    return {
+        clock: clock,
+        human: human,
+        combined: clock + ' (' + human + ')'
+    };
+}
+
+function updateLiveTimer() {
+    const badge = document.getElementById('progress-time-badge');
+    const counter = document.getElementById('progress-time-counter');
+    if (!badge || !counter) return;
+
+    if (RUN_ACTIVE && RUN_START_TIME) {
+        const elapsed = Math.max(0, (Date.now() / 1000) - RUN_START_TIME);
+        const formatted = formatTimePassing(elapsed);
+        badge.className = 'progress-time-badge running';
+        counter.innerText = 'Elapsed: ' + formatted.combined;
+    }
+}
+
+function startLiveTimer() {
+    if (TIMER_INTERVAL) clearInterval(TIMER_INTERVAL);
+    updateLiveTimer();
+    TIMER_INTERVAL = setInterval(updateLiveTimer, 250);
+}
+
+function stopLiveTimer(finalSeconds) {
+    if (TIMER_INTERVAL) {
+        clearInterval(TIMER_INTERVAL);
+        TIMER_INTERVAL = null;
+    }
+    const badge = document.getElementById('progress-time-badge');
+    const counter = document.getElementById('progress-time-counter');
+    if (!badge || !counter) return;
+
+    badge.className = 'progress-time-badge';
+    if (finalSeconds !== null && finalSeconds !== undefined && !isNaN(finalSeconds) && finalSeconds > 0) {
+        const formatted = formatTimePassing(finalSeconds);
+        counter.innerText = 'Total: ' + formatted.combined;
+    } else if (RUN_START_TIME) {
+        const elapsed = Math.max(0, (Date.now() / 1000) - RUN_START_TIME);
+        const formatted = formatTimePassing(elapsed);
+        counter.innerText = 'Total: ' + formatted.combined;
+    }
+}
 
 // --- Reactive polling: process/progress ---
 function escapeHtml(str) {
@@ -232,7 +332,7 @@ function renderNestedTable(obj) {
     // proper nested grid instead of a dumped JSON blob in one cell.
     let html = '<table class="report-grid-table report-grid-table--nested"><tbody>';
     for (const [key, value] of Object.entries(obj)) {
-        html += '<tr><th>' + escapeHtml(key) + '</th><td>' + formatCellValue(value) + '</td></tr>';
+        html += '<tr><th>' + escapeHtml(key) + '</th><td>' + formatCellValue(value, key) + '</td></tr>';
     }
     html += '</tbody></table>';
     return html;
@@ -255,7 +355,7 @@ function renderNestedList(arr) {
         html += '</tr></thead><tbody>';
         for (const item of arr) {
             html += '<tr>';
-            for (const col of columns) html += '<td>' + formatCellValue(item[col]) + '</td>';
+            for (const col of columns) html += '<td>' + formatCellValue(item[col], col) + '</td>';
             html += '</tr>';
         }
         html += '</tbody></table>';
@@ -269,11 +369,21 @@ function renderNestedList(arr) {
     return html;
 }
 
-function formatCellValue(value) {
+function formatCellValue(value, key) {
     if (value === null || value === undefined) {
         return '<span class="report-val-null">null</span>';
     }
+    if (value === 'running') {
+        return '<span class="report-val-status-running">● running</span>';
+    }
+    if (value === 'completed') {
+        return '<span class="report-val-status-completed">✓ completed</span>';
+    }
     if (typeof value === 'number') {
+        if (key && (key.toLowerCase().includes('duration') || key.toLowerCase().includes('cooldown') || key.toLowerCase().includes('time_seconds'))) {
+            const t = formatTimePassing(value);
+            return '<span class="report-val-number" title="' + value + 's">' + escapeHtml(t.human) + ' <span style="color:#777; font-size:11px;">(' + escapeHtml(t.clock) + ')</span></span>';
+        }
         return '<span class="report-val-number">' + escapeHtml(value) + '</span>';
     }
     if (typeof value === 'boolean') {
@@ -298,8 +408,18 @@ function renderReportGrid(data) {
         container.innerText = 'No report data yet.';
         return;
     }
+    if (data.phases && Object.keys(data.phases).length === 0 && Object.keys(data).length === 1) {
+        container.className = 'report-empty';
+        container.innerText = 'No report data yet.';
+        return;
+    }
+
     container.className = '';
-    container.innerHTML = renderNestedTable(data);
+    if (data.phases && Object.keys(data).length === 1) {
+        container.innerHTML = renderNestedTable(data.phases);
+    } else {
+        container.innerHTML = renderNestedTable(data);
+    }
 }
 
 // --- Report tabs ---
@@ -366,6 +486,30 @@ async function pollStats() {
         const pct = pctExact >= 10 ? pctExact.toFixed(0) : pctExact.toFixed(2);
         const status = data.task_status || {};
         const isRunning = !!status.is_running;
+
+        // Synchronize and update live timer
+        if (isRunning) {
+            const serverDuration = typeof status.duration_seconds === 'number' ? status.duration_seconds : 0;
+            if (!RUN_START_TIME || Math.abs((Date.now() / 1000 - RUN_START_TIME) - serverDuration) > 1.5) {
+                RUN_START_TIME = (Date.now() / 1000) - serverDuration;
+            }
+            if (!RUN_ACTIVE) {
+                RUN_ACTIVE = true;
+                startLiveTimer();
+            }
+        } else {
+            if (RUN_ACTIVE) {
+                RUN_ACTIVE = false;
+                stopLiveTimer(status.duration_seconds);
+            } else if (typeof status.duration_seconds === 'number' && status.duration_seconds > 0) {
+                const badge = document.getElementById('progress-time-badge');
+                const counter = document.getElementById('progress-time-counter');
+                if (badge && counter && badge.className.includes('idle')) {
+                    badge.className = 'progress-time-badge';
+                    counter.innerText = 'Last run: ' + formatTimePassing(status.duration_seconds).combined;
+                }
+            }
+        }
 
         const bar = document.getElementById('progress-bar');
         const label = document.getElementById('progress-label');
@@ -521,22 +665,272 @@ async function pollLogs() {
     } catch (e) { /* ignore */ }
 }
 
-async function pollResults() {
-    try {
-        const resp = await fetch('/api/results');
-        const data = await resp.json();
-        const section = document.getElementById('output-section');
-        if (!data.files || !data.files.length) {
-            section.innerText = 'No files yet.';
+// --- History Directory Tree Viewer ----------------------------------
+class HistoryTreeViewer {
+    constructor(containerId) {
+        this.container = document.getElementById(containerId);
+        this.openFolders = new Set();
+        this.downloadingFiles = new Set();
+        this.searchQuery = '';
+        this.treeData = null;
+        this.initialized = false;
+    }
+
+    sanitizeId(str) {
+        return String(str).replace(/[^a-zA-Z0-9_-]/g, '_');
+    }
+
+    getFileIcon(filename, ext) {
+        const e = (ext || '').toLowerCase();
+        if (e === 'json') return '<span style="font-size:14px; margin-right:4px;">📜</span>';
+        if (e === 'csv') return '<span style="font-size:14px; margin-right:4px;">📊</span>';
+        if (e === 'log' || e === 'txt') return '<span style="font-size:14px; margin-right:4px;">📋</span>';
+        return '<span style="font-size:14px; margin-right:4px;">📄</span>';
+    }
+
+    highlight(text) {
+        if (!this.searchQuery) return escapeHtml(text);
+        const q = this.searchQuery.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const regex = new RegExp('(' + q + ')', 'gi');
+        return escapeHtml(text).replace(regex, '<span class="tree-highlight">$1</span>');
+    }
+
+    toggleFolder(path) {
+        if (this.openFolders.has(path)) {
+            this.openFolders.delete(path);
+        } else {
+            this.openFolders.add(path);
+        }
+        this.render();
+    }
+
+    expandAll() {
+        if (!this.treeData) return;
+        const traverse = (node) => {
+            if (node.type === 'directory') {
+                this.openFolders.add(node.path);
+                (node.children || []).forEach(traverse);
+            }
+        };
+        (this.treeData.tree || []).forEach(traverse);
+        this.render();
+    }
+
+    collapseAll() {
+        this.openFolders.clear();
+        this.render();
+    }
+
+    setSearch(query) {
+        this.searchQuery = (query || '').trim().toLowerCase();
+        if (this.searchQuery && this.treeData) {
+            // Auto expand folders that contain matching items
+            const matchTraverse = (node) => {
+                if (node.type === 'directory') {
+                    let hasMatch = node.name.toLowerCase().includes(this.searchQuery);
+                    for (const child of (node.children || [])) {
+                        if (matchTraverse(child)) hasMatch = true;
+                    }
+                    if (hasMatch) this.openFolders.add(node.path);
+                    return hasMatch;
+                } else {
+                    return node.name.toLowerCase().includes(this.searchQuery);
+                }
+            };
+            (this.treeData.tree || []).forEach(matchTraverse);
+        }
+        this.render();
+    }
+
+    async downloadFile(path, downloadUrl, fileName) {
+        if (this.downloadingFiles.has(path)) return;
+        this.downloadingFiles.add(path);
+        this.updateFileStatus(path, 'downloading');
+
+        try {
+            const resp = await fetch(downloadUrl);
+            if (!resp.ok) throw new Error('HTTP ' + resp.status);
+            const blob = await resp.blob();
+            const blobUrl = window.URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.style.display = 'none';
+            a.href = blobUrl;
+            a.download = fileName;
+            document.body.appendChild(a);
+            a.click();
+            setTimeout(() => {
+                window.URL.revokeObjectURL(blobUrl);
+                a.remove();
+            }, 1000);
+
+            this.updateFileStatus(path, 'success');
+            setTimeout(() => {
+                this.downloadingFiles.delete(path);
+                this.updateFileStatus(path, 'idle');
+            }, 1400);
+        } catch (err) {
+            console.error('Download error for ' + path + ':', err);
+            this.updateFileStatus(path, 'error');
+            setTimeout(() => {
+                this.downloadingFiles.delete(path);
+                this.updateFileStatus(path, 'idle');
+            }, 1800);
+        }
+    }
+
+    updateFileStatus(path, status) {
+        const row = document.querySelector('.tree-file-row[data-path="' + CSS.escape(path) + '"]');
+        const iconWrap = document.getElementById('file-icon-' + this.sanitizeId(path));
+        if (!iconWrap) return;
+
+        if (status === 'downloading') {
+            if (row) row.classList.add('downloading');
+            iconWrap.innerHTML = '<span class="file-spinner" title="Downloading..."></span>';
+        } else if (status === 'success') {
+            if (row) row.classList.remove('downloading');
+            iconWrap.innerHTML = '<span class="file-success-icon" title="Downloaded!">&#10003;</span>';
+        } else if (status === 'error') {
+            if (row) row.classList.remove('downloading');
+            iconWrap.innerHTML = '<span class="file-error-icon" title="Download failed">&#10005;</span>';
+        } else {
+            if (row) row.classList.remove('downloading');
+            const ext = path.split('.').pop();
+            iconWrap.innerHTML = this.getFileIcon(path, ext);
+        }
+    }
+
+    renderNode(node) {
+        const isDir = node.type === 'directory';
+        const q = this.searchQuery;
+
+        if (isDir) {
+            // Check if directory or any descendant matches query
+            const matchesQuery = (n) => {
+                if (!q) return true;
+                if (n.name.toLowerCase().includes(q)) return true;
+                if (n.children && n.children.some(matchesQuery)) return true;
+                return false;
+            };
+
+            if (q && !matchesQuery(node)) return '';
+
+            const isOpen = this.openFolders.has(node.path);
+            const badgeCount = node.file_count || 0;
+            const badgeText = badgeCount + (badgeCount === 1 ? ' file' : ' files');
+            const currentBadge = node.is_current ? '<span class="badge-current-run">current</span>' : '';
+            const metaInfo = (node.mtime_str ? escapeHtml(node.mtime_str) + ' &middot; ' : '') + escapeHtml(node.size_str || '');
+
+            let html = '<div class="tree-node tree-node--folder' + (isOpen ? ' open' : '') + '">';
+            html += '<div class="tree-folder-header" onclick="historyTree.toggleFolder(\'' + escapeHtml(node.path) + '\')">';
+            html += '<span class="tree-caret">&#9656;</span>';
+            html += '<span class="tree-folder-icon-wrap">';
+            html += '<span class="tree-folder-icon">' + (isOpen ? '📂' : '📁') + '</span>';
+            html += '<span class="folder-badge" title="' + badgeCount + ' file(s)">' + badgeText + '</span>';
+            html += '</span>';
+            html += '<span class="tree-folder-title">' + this.highlight(node.name) + '</span>';
+            html += currentBadge;
+            html += '<span class="tree-meta">' + metaInfo + '</span>';
+            html += '</div>';
+
+            html += '<div class="tree-folder-children">';
+            if (node.children && node.children.length) {
+                for (const child of node.children) {
+                    html += this.renderNode(child);
+                }
+            } else {
+                html += '<div class="tree-empty" style="padding:4px 8px; font-size:11px;">Empty folder</div>';
+            }
+            html += '</div></div>';
+            return html;
+        } else {
+            if (q && !node.name.toLowerCase().includes(q)) return '';
+
+            const isDownloading = this.downloadingFiles.has(node.path);
+            const iconId = 'file-icon-' + this.sanitizeId(node.path);
+            const currentBadge = node.is_current ? '<span class="badge-current-run">current</span>' : '';
+            const metaInfo = (node.size_str ? escapeHtml(node.size_str) + ' &middot; ' : '') + escapeHtml(node.mtime_str || '');
+
+            let iconHtml = this.getFileIcon(node.name, node.extension);
+            if (isDownloading) {
+                iconHtml = '<span class="file-spinner" title="Downloading..."></span>';
+            }
+
+            let html = '<div class="tree-node tree-node--file">';
+            html += '<div class="tree-file-row' + (isDownloading ? ' downloading' : '') + '" data-path="' + escapeHtml(node.path) + '" ' +
+                'onclick="historyTree.downloadFile(\'' + escapeHtml(node.path) + '\', \'' + escapeHtml(node.download_url) + '\', \'' + escapeHtml(node.name) + '\')" ' +
+                'title="Click to download ' + escapeHtml(node.name) + '">';
+            html += '<span class="file-icon-wrap" id="' + iconId + '">' + iconHtml + '</span>';
+            html += '<span class="tree-file-name">' + this.highlight(node.name) + '</span>';
+            html += currentBadge;
+            html += '<span class="tree-meta">' + metaInfo + '</span>';
+            html += '</div></div>';
+            return html;
+        }
+    }
+
+    render() {
+        if (!this.container) return;
+        if (!this.treeData || !this.treeData.tree || !this.treeData.tree.length) {
+            this.container.innerHTML = '<div class="tree-empty">No runs or output files found in outsourcing directory.</div>';
             return;
         }
-        section.innerHTML = data.files.map((f) => {
-            const sizeStr = f.exists ? (' (' + f.size + ' bytes)') : ' (pending...)';
-            const link = f.exists ? (' - <a href="' + f.download_url + '">download</a>') : '';
-            const currentBadge = f.is_current ? ' <span class="badge badge-running" style="padding:1px 5px; font-size:9px;">current</span>' : '';
-            return '<div>' + escapeHtml(f.display_name) + sizeStr + currentBadge + link + '</div>';
-        }).join('');
-    } catch (e) { /* ignore */ }
+
+        let html = '';
+        for (const node of this.treeData.tree) {
+            html += this.renderNode(node);
+        }
+
+        if (this.searchQuery && !html.trim()) {
+            this.container.innerHTML = '<div class="tree-empty">No matching files or folders found for "' + escapeHtml(this.searchQuery) + '".</div>';
+            return;
+        }
+
+        this.container.innerHTML = html;
+    }
+
+    async updateData(data) {
+        this.treeData = data;
+        const badge = document.getElementById('tree-stats-badge');
+        if (badge && data) {
+            badge.innerText = (data.total_folders || 0) + ' folders, ' + (data.total_files || 0) + ' files (' + (data.size_str || '0 B') + ')';
+        }
+
+        // On first load, auto-open the latest run directory so files are immediately visible
+        if (!this.initialized && data && data.tree && data.tree.length) {
+            this.initialized = true;
+            for (const rootNode of data.tree) {
+                if (rootNode.type === 'directory') {
+                    this.openFolders.add(rootNode.path);
+                    if (rootNode.children) {
+                        for (const child of rootNode.children) {
+                            if (child.type === 'directory') {
+                                this.openFolders.add(child.path);
+                            }
+                        }
+                    }
+                    break; // auto open the latest top-level run
+                }
+            }
+        }
+        this.render();
+    }
+}
+
+const historyTree = new HistoryTreeViewer('history-tree-container');
+
+document.getElementById('tree-expand-all').addEventListener('click', () => historyTree.expandAll());
+document.getElementById('tree-collapse-all').addEventListener('click', () => historyTree.collapseAll());
+document.getElementById('tree-refresh-btn').addEventListener('click', () => pollResults());
+document.getElementById('tree-search-input').addEventListener('input', (e) => historyTree.setSearch(e.target.value));
+
+async function pollResults() {
+    try {
+        const resp = await fetch('/api/history/tree');
+        const data = await resp.json();
+        historyTree.updateData(data);
+    } catch (e) {
+        console.warn('History tree poll error:', e);
+    }
 }
 
 pollStats(); pollLogs(); pollResults(); pollWorkers();
