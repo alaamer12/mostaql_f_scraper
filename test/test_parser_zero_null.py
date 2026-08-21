@@ -65,7 +65,7 @@ def test_standard_profile_zero_null(parser):
 
     # Zero-Null assertion
     StrictZeroNullValidator.validate_profile(profile, html=html)
-    profile_dict = asdict(profile)
+    profile_dict = profile.to_dict()
     for k, v in profile_dict.items():
         assert v is not None, f"Field {k} is null in profile_dict!"
 

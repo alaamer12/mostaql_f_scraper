@@ -23,10 +23,19 @@ class ExporterService:
     def __init__(self, storage: Optional[StorageService] = None) -> None:
         self.storage = storage or StorageService()
 
-    def _to_records(self, items: Sequence[Any]) -> List[dict]:
+    def _to_records(self, items: Sequence[Any], flat: bool = False) -> List[dict]:
         records = []
         for item in items:
-            rec = asdict(item) if is_dataclass(item) else dict(item)
+            if flat and hasattr(item, "to_flat_dict"):
+                rec = item.to_flat_dict()
+            elif hasattr(item, "to_dict"):
+                rec = item.to_dict()
+            elif hasattr(item, "model_dump"):
+                rec = item.model_dump()
+            elif is_dataclass(item):
+                rec = asdict(item)
+            else:
+                rec = dict(item)
             StrictZeroNullValidator.validate_record_dict(rec)
             records.append(rec)
         return records
@@ -39,15 +48,15 @@ class ExporterService:
         csv_path: Union[str, Path, None] = None,
     ) -> None:
         """Export records to JSON and/or CSV, whichever path is provided."""
-        records = self._to_records(items)
-
         if json_path:
-            self.storage.save_json(records, json_path)
-            log.info(f"Exported {len(records)} records -> {json_path}")
+            json_records = self._to_records(items, flat=False)
+            self.storage.save_json(json_records, json_path)
+            log.info(f"Exported {len(json_records)} records -> {json_path}")
 
         if csv_path:
-            self.storage.save_csv(records, csv_path)
-            log.info(f"Exported {len(records)} records -> {csv_path}")
+            csv_records = self._to_records(items, flat=True)
+            self.storage.save_csv(csv_records, csv_path)
+            log.info(f"Exported {len(csv_records)} records -> {csv_path}")
 
     def export_json(self, items: Sequence[Any], json_path: Union[str, Path]) -> None:
         self.export(items, json_path=json_path)

@@ -310,20 +310,28 @@ def clean_percentage_str(raw: Any, default: str = "100.0%") -> str:
 
 
 def normalize_profile_record(rec: Dict[str, Any]) -> Dict[str, Any]:
-    """Ensure all fields in a profile record dict are 100% non-null."""
+    """Ensure all fields in a profile record dict are 100% non-null and aligned with schema bounds."""
     r = dict(rec)
     total_comp = clean_numeric_value(r.get("total_completed_projects"), default=0.0)
     active_p = clean_numeric_value(r.get("active_projects"), default=0.0)
-    comp_rate = clean_numeric_value(r.get("completion_rate"), default=100.0)
-    ontime_rate = clean_numeric_value(r.get("ontime_delivery_rate"), default=100.0)
-    rehire_rate = clean_numeric_value(r.get("rehire_rate"), default=100.0 if total_comp > 0 else 0.0)
-    comm_rate = clean_numeric_value(r.get("communication_success_rate"), default=100.0)
 
-    # Employer only
-    if r.get("employment_rate") is None or is_placeholder(r.get("employment_rate")):
-        r["employment_rate"] = min(100.0, round((comp_rate + rehire_rate) / 2.0, 2)) if total_comp > 0 else 100.0
+    if total_comp > 0:
+        comp_rate = clean_numeric_value(r.get("completion_rate"), default=100.0)
+        ontime_rate = clean_numeric_value(r.get("ontime_delivery_rate"), default=100.0)
+        rehire_rate = clean_numeric_value(r.get("rehire_rate"), default=100.0)
+        comm_rate = clean_numeric_value(r.get("communication_success_rate"), default=100.0)
+        if r.get("employment_rate") is not None and not is_placeholder(r.get("employment_rate")):
+            emp_rate = clean_numeric_value(r.get("employment_rate"), default=100.0)
+        else:
+            emp_rate = min(100.0, round((comp_rate + rehire_rate) / 2.0, 2))
     else:
-        r["employment_rate"] = clean_numeric_value(r["employment_rate"], default=100.0)
+        comp_rate = clean_numeric_value(r.get("completion_rate"), default=0.0) if r.get("completion_rate") and not is_placeholder(r.get("completion_rate")) else 0.0
+        ontime_rate = clean_numeric_value(r.get("ontime_delivery_rate"), default=0.0) if r.get("ontime_delivery_rate") and not is_placeholder(r.get("ontime_delivery_rate")) else 0.0
+        rehire_rate = clean_numeric_value(r.get("rehire_rate"), default=0.0) if r.get("rehire_rate") and not is_placeholder(r.get("rehire_rate")) else 0.0
+        comm_rate = clean_numeric_value(r.get("communication_success_rate"), default=0.0) if r.get("communication_success_rate") and not is_placeholder(r.get("communication_success_rate")) else 0.0
+        emp_rate = clean_numeric_value(r.get("employment_rate"), default=0.0) if r.get("employment_rate") and not is_placeholder(r.get("employment_rate")) else 0.0
+
+    r["employment_rate"] = emp_rate
 
     if r.get("received_projects") is None or is_placeholder(r.get("received_projects")):
         r["received_projects"] = total_comp + active_p
@@ -359,8 +367,15 @@ def normalize_profile_record(rec: Dict[str, Any]) -> Dict[str, Any]:
     r["skills_count"] = float(len(r["skills"]))
     r["skills_str"] = ", ".join(r["skills"])
 
+    if not r.get("bio"):
+        r["bio"] = ""
+    if not r.get("verifications") or not isinstance(r.get("verifications"), list):
+        r["verifications"] = []
+    if not r.get("badges") or not isinstance(r.get("badges"), list):
+        r["badges"] = []
+
     if not r.get("avg_response_time_raw") or is_placeholder(r.get("avg_response_time_raw")):
-        r["avg_response_time_raw"] = "خلال يوم"
+        r["avg_response_time_raw"] = "غير محدد"
     if r.get("avg_response_time_minutes") is None:
         r["avg_response_time_minutes"] = 1440.0
     if not r.get("last_active") or is_placeholder(r.get("last_active")):

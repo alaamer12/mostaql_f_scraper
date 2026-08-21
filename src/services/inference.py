@@ -137,84 +137,87 @@ FIELD_PROFILES: Dict[str, Dict[str, Any]] = {
     # Freelancer profile fields
     "completion_rate": {
         "core_stems": [stem("إكمال"), stem("اكمال")],
-        "expected_types": {"PERCENT", "PLACEHOLDER"},
+        "expected_types": {"PERCENT"},
         "expected_types_weak": {"NUMBER"},
         "unit_hints": ["%"],
         "requires_unit": False,
     },
     "ontime_delivery_rate": {
         "core_stems": [stem("تسليم"), stem("موعد")],
-        "expected_types": {"PERCENT", "PLACEHOLDER"},
+        "expected_types": {"PERCENT"},
         "expected_types_weak": {"NUMBER"},
         "unit_hints": ["%"],
         "requires_unit": False,
     },
     "rehire_rate": {
         "core_stems": [stem("إعادة"), stem("اعادة"), stem("توظيف")],
-        "expected_types": {"PERCENT", "PLACEHOLDER"},
+        "expected_types": {"PERCENT"},
         "expected_types_weak": {"NUMBER"},
         "unit_hints": ["%"],
         "requires_unit": False,
     },
     "communication_success_rate": {
         "core_stems": [stem("نجاح"), stem("تواصل"), stem("تواصلات")],
-        "expected_types": {"PERCENT", "PLACEHOLDER"},
+        "expected_types": {"PERCENT"},
         "expected_types_weak": {"NUMBER"},
         "unit_hints": ["%"],
         "requires_unit": False,
     },
     "employment_rate": {
         "core_stems": [stem("معدل"), stem("توظيف")],
-        "expected_types": {"PERCENT", "PLACEHOLDER"},
+        "expected_types": {"PERCENT"},
         "expected_types_weak": {"NUMBER"},
         "unit_hints": ["%"],
         "requires_unit": False,
     },
     "total_completed_projects": {
         "core_stems": [stem("مكتملة"), stem("مكتمل"), stem("منجزة"), stem("منجز")],
-        "expected_types": {"NUMBER", "PLACEHOLDER"},
-        "forbidden_types": {"PERCENT", "FLOAT"},
+        "expected_types": {"NUMBER"},
+        "forbidden_types": {"PERCENT", "FLOAT", "PLACEHOLDER"},
         "unit_hints": [],
         "requires_unit": False,
     },
     "active_projects": {
         "core_stems": [stem("يعمل"), stem("عليها")],
-        "expected_types": {"NUMBER", "PLACEHOLDER"},
-        "forbidden_types": {"PERCENT", "FLOAT"},
+        "expected_types": {"NUMBER"},
+        "forbidden_types": {"PERCENT", "FLOAT", "PLACEHOLDER"},
         "unit_hints": [],
         "requires_unit": False,
     },
     "received_projects": {
         "core_stems": [stem("مستلمة"), stem("استلام")],
-        "expected_types": {"NUMBER", "PLACEHOLDER"},
-        "forbidden_types": {"PERCENT", "FLOAT"},
+        "expected_types": {"NUMBER"},
+        "forbidden_types": {"PERCENT", "FLOAT", "PLACEHOLDER"},
         "unit_hints": [],
         "requires_unit": False,
     },
     "financial_deals": {
         "core_stems": [stem("تعاملاتي"), stem("صفقات")],
-        "expected_types": {"NUMBER", "PLACEHOLDER"},
-        "forbidden_types": {"PERCENT", "FLOAT"},
+        "expected_types": {"NUMBER"},
+        "forbidden_types": {"PERCENT", "FLOAT", "PLACEHOLDER"},
         "unit_hints": [],
         "requires_unit": False,
     },
     "avg_response_time_raw": {
         "core_stems": [stem("متوسط"), stem("سرعة"), stem("رد"), stem("تجاوب")],
-        "expected_types": {"NUMBER", "FLOAT", "DATE", "DURATION", "PLACEHOLDER"},
+        "expected_types": {"NUMBER", "FLOAT", "DATE", "DURATION"},
+        "forbidden_types": {"PLACEHOLDER"},
         "unit_hints": DURATION_UNITS,
         "requires_unit": False,
     },
     "registration_date_raw": {
         "core_stems": [stem("تاريخ"), stem("تسجيل"), stem("عضو"), stem("انضمام")],
-        "expected_types": {"DATE", "NUMBER", "DURATION", "PLACEHOLDER"},
+        "expected_types": {"DATE", "NUMBER", "DURATION"},
         "expected_types_weak": {"NUMBER"},
+        "forbidden_types": {"PLACEHOLDER"},
         "unit_hints": MONTH_NAMES + RELATIVE_DATE_WORDS,
         "requires_unit": False,
     },
     "last_active_raw": {
         "core_stems": [stem("آخر"), stem("اخر"), stem("تواجد"), stem("نشاط"), stem("ظهور")],
-        "expected_types": {"DATE", "NUMBER", "DURATION", "PLACEHOLDER"},
+        "expected_types": {"DATE", "NUMBER", "DURATION"},
         "expected_types_weak": {"NUMBER"},
+        "forbidden_types": {"PLACEHOLDER"},
         "unit_hints": RELATIVE_DATE_WORDS + DURATION_UNITS,
         "requires_unit": False,
     },
@@ -584,7 +587,11 @@ def resolve_fields(candidates: List[Candidate], target_fields: Optional[List[str
             continue
         scored.sort(key=lambda pair: pair[0], reverse=True)
         top_prob, top_cand = scored[0]
-        if top_cand.scores.get(field, 0.0) <= 0.0:
+        if (
+            top_cand.scores.get(field, 0.0) <= 0.0
+            or top_cand.types == {"PLACEHOLDER"}
+            or any(m in top_cand.raw_text.strip().lower() for m in NOT_CALCULATED_MARKERS)
+        ):
             results[field] = {
                 "value": None,
                 "confidence": 0.0,

@@ -280,7 +280,7 @@ class ScraperOrchestrator:
                         updated_f = Freelancer(
                             name=f.name,
                             profile_url=f.profile_url,
-                            avatar_url=f.avatar_url,
+                            avatar_url=details.avatar_url or f.avatar_url,
                             title=details.title or f.title,
                             rank=str(details.rating) if details.rating is not None else f.rank
                         )

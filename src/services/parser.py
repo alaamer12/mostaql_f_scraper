@@ -4,7 +4,8 @@ from datetime import datetime
 from typing import List, Dict, Any, Optional, Tuple, Set
 from bs4 import BeautifulSoup, Tag
 
-from ..models import Freelancer, ProfileDetails, ScrapeConfig
+from ..models import Freelancer, ProfileDetails, ProfileStats, ProfileMetadata, FieldMeta, ScrapeConfig, Source
+from ..schema.spec import FIELD_SPECS, check_record_coherence
 from .analyzer import (
     structural_profile_extract,
     label_driven_extract,
@@ -173,7 +174,7 @@ class ParsingService:
         return float(full_stars + (half_stars * 0.5))
 
     def parse_profile(self, html: str, url: str, portfolio_html: Optional[str] = None) -> Optional[ProfileDetails]:
-        """Multi-Tier parsing: Structural -> DOM-Adjacency -> Token-Inference -> Zero-Null Normalizer."""
+        """Multi-Tier parsing: Structural -> DOM-Adjacency -> Token-Inference -> Schema Normalizer."""
         soup = BeautifulSoup(html, "lxml" if "lxml" in BeautifulSoup.__module__ else "html.parser")
 
         # Check confidence / sanity
@@ -182,156 +183,533 @@ class ParsingService:
             log.warning(f"Low confidence ({score}/5) for {url}. Signals: {signals}")
             return None
 
-        # 1. Basic Metadata Extraction with Multi-Resilient Fallbacks
-        name = self._extract_name(soup, url)
-        title = self._extract_title(soup)
-        location = self._extract_location(soup)
-        bio = self._extract_bio(soup)
-        verifications = self._extract_verifications(soup)
-        badges = self._extract_badges(soup)
-        rating, reviews_count = self._extract_rating(soup)
-        skills = self._extract_skills(soup)
-        portfolio_count = self._extract_portfolio_count(soup, portfolio_html)
+        field_metas: Dict[str, FieldMeta] = {}
+        outlier_fields: List[str] = []
 
-        # 2. Multi-Tier Stats Extraction (Structural -> Label Adjacency -> Inference Fallback)
-        stats_raw = self._extract_stats_multi_tier(soup)
+        # 1. Identity & Content Extraction
+        name_raw = self._extract_name(soup, url)
+        avatar_raw = self._extract_avatar(soup)
+        title_raw = self._extract_title(soup)
+        location_raw = self._extract_location(soup)
+        bio_raw = self._extract_bio(soup)
+        verifications_raw = self._extract_verifications(soup)
+        badges_raw = self._extract_badges(soup)
+        rating_raw, reviews_count_raw = self._extract_rating(soup)
+        skills_raw = self._extract_skills(soup)
+        portfolio_raw = self._extract_portfolio_count(soup, portfolio_html)
 
-        # 3. Contextual Derivation & Zero-Null Normalization
-        total_completed = clean_numeric_value(stats_raw.get("total_completed_projects"), default=0.0)
-        active_proj = clean_numeric_value(stats_raw.get("active_projects"), default=0.0)
-        
-        # Rates normalization:
-        # If the user has completed projects, parse the rate or default to 100.0.
-        # If the user has 0 completed projects (new / uncalculated profile), rates default to 0.0.
-        if total_completed > 0:
-            completion_rate_val = clean_numeric_value(stats_raw.get("completion_rate"), default=100.0)
-            ontime_rate_val = clean_numeric_value(stats_raw.get("ontime_delivery_rate"), default=100.0)
-            rehire_rate_val = clean_numeric_value(stats_raw.get("rehire_rate"), default=100.0)
-            comm_rate_val = clean_numeric_value(stats_raw.get("communication_success_rate"), default=100.0)
-        else:
-            # For 0 completed projects, if an explicit numeric rate exists (not placeholder), use it, else 0.0
-            raw_comp = stats_raw.get("completion_rate")
-            completion_rate_val = clean_numeric_value(raw_comp, default=0.0) if raw_comp and not is_placeholder(raw_comp) else 0.0
-            
-            raw_ontime = stats_raw.get("ontime_delivery_rate")
-            ontime_rate_val = clean_numeric_value(raw_ontime, default=0.0) if raw_ontime and not is_placeholder(raw_ontime) else 0.0
-            
-            raw_rehire = stats_raw.get("rehire_rate")
-            rehire_rate_val = clean_numeric_value(raw_rehire, default=0.0) if raw_rehire and not is_placeholder(raw_rehire) else 0.0
-            
-            raw_comm = stats_raw.get("communication_success_rate")
-            comm_rate_val = clean_numeric_value(raw_comm, default=0.0) if raw_comm and not is_placeholder(raw_comm) else 0.0
-
-        # Employer-only fields inferential derivation:
-        if "employment_rate" in stats_raw and not is_placeholder(stats_raw["employment_rate"]):
-            employment_rate_val = clean_numeric_value(stats_raw["employment_rate"], default=0.0)
-        else:
-            if total_completed > 0:
-                employment_rate_val = min(100.0, round((completion_rate_val + rehire_rate_val) / 2.0, 2))
-            else:
-                employment_rate_val = 0.0
-
-        # received_projects: if present, parse; else derive from total_completed + active
-        if "received_projects" in stats_raw and not is_placeholder(stats_raw["received_projects"]):
-            received_projects_val = clean_numeric_value(stats_raw["received_projects"], default=total_completed + active_proj)
-        else:
-            received_projects_val = total_completed + active_proj
-
-        # financial_deals: if present, parse; else derive from completed projects
-        if "financial_deals" in stats_raw and not is_placeholder(stats_raw["financial_deals"]):
-            financial_deals_val = clean_numeric_value(stats_raw["financial_deals"], default=total_completed)
-        else:
-            financial_deals_val = total_completed
-
-        # Response time, Registration Date, and Activity
-        resp_raw = stats_raw.get("avg_response_time_raw")
-        if not resp_raw or is_placeholder(resp_raw):
-            resp_raw = "غير محدد"
-        avg_resp_mins = parse_duration_to_minutes(resp_raw)
-
-        reg_raw = stats_raw.get("registration_date_raw") or "2021-01-01"
-        if is_placeholder(reg_raw):
-            reg_raw = "2021-01-01"
-        reg_iso = parse_arabic_date(reg_raw)
-
-        last_act_raw = stats_raw.get("last_active_raw") or "منذ يوم"
-        if is_placeholder(last_act_raw):
-            last_act_raw = "منذ يوم"
-
-        # Success Score Calculation
-        success_score = calculate_success_score(
-            completion_rate=completion_rate_val,
-            ontime_delivery_rate=ontime_rate_val,
-            rehire_rate=rehire_rate_val,
-            communication_success_rate=comm_rate_val,
-            employment_rate=employment_rate_val,
-            total_completed_projects=total_completed,
-            rating=rating,
-            reviews_count=reviews_count,
+        # Parse Identity & Content
+        name_out = FIELD_SPECS["name"].type.parse(name_raw)
+        field_metas["name"] = FieldMeta(
+            source="dom_structural" if soup.select_one("h1.profile-name, h1 bdi") else "default",
+            confidence=round(name_out.confidence, 2),
+            raw=str(name_raw or ""),
+            outlier=bool(name_out.issues),
+            issues=name_out.issues,
+            type="Text",
+            formatted=FIELD_SPECS["name"].type.format(name_out.value),
         )
 
-        # Full Non-Null Stats Mapping
-        complete_stats: Dict[str, Any] = {
-            "employment_rate": employment_rate_val,
-            "received_projects": received_projects_val,
-            "financial_deals": financial_deals_val,
-            "completion_rate": completion_rate_val,
-            "ontime_delivery_rate": ontime_rate_val,
-            "rehire_rate": rehire_rate_val,
-            "communication_success_rate": comm_rate_val,
+        avatar_out = FIELD_SPECS["avatar_url"].type.parse(avatar_raw)
+        field_metas["avatar_url"] = FieldMeta(
+            source="dom_structural" if avatar_raw else "default",
+            confidence=round(avatar_out.confidence, 2),
+            raw=str(avatar_raw or ""),
+            outlier=bool(avatar_out.issues),
+            issues=avatar_out.issues,
+            type="Text",
+            formatted=FIELD_SPECS["avatar_url"].type.format(avatar_out.value),
+        )
+
+        title_out = FIELD_SPECS["title"].type.parse(title_raw)
+        field_metas["title"] = FieldMeta(
+            source="dom_structural" if title_raw != "مستقل" else "default",
+            confidence=round(title_out.confidence, 2),
+            raw=str(title_raw or ""),
+            outlier=bool(title_out.issues),
+            issues=title_out.issues,
+            type="Text",
+            formatted=FIELD_SPECS["title"].type.format(title_out.value),
+        )
+
+        loc_out = FIELD_SPECS["location"].type.parse(location_raw)
+        field_metas["location"] = FieldMeta(
+            source="dom_structural" if location_raw != "غير محدد" else "default",
+            confidence=round(loc_out.confidence, 2),
+            raw=str(location_raw or ""),
+            outlier=bool(loc_out.issues),
+            issues=loc_out.issues,
+            type="Text",
+            formatted=FIELD_SPECS["location"].type.format(loc_out.value),
+        )
+
+        bio_out = FIELD_SPECS["bio"].type.parse(bio_raw)
+        field_metas["bio"] = FieldMeta(
+            source="dom_structural" if bio_raw else "default",
+            confidence=round(bio_out.confidence, 2),
+            raw=str(bio_raw or ""),
+            outlier=bool(bio_out.issues),
+            issues=bio_out.issues,
+            type="Text",
+            formatted=FIELD_SPECS["bio"].type.format(bio_out.value),
+        )
+
+        skills_out = FIELD_SPECS["skills"].type.parse(skills_raw)
+        field_metas["skills"] = FieldMeta(
+            source="dom_structural" if skills_raw else "default",
+            confidence=round(skills_out.confidence, 2),
+            raw=str(skills_raw or ""),
+            outlier=bool(skills_out.issues),
+            issues=skills_out.issues,
+            type="ListOf(Text)",
+            formatted=f"{len(skills_out.value)} skills",
+        )
+
+        field_metas["skills_count"] = FieldMeta(
+            source="derived",
+            confidence=1.0,
+            raw=str(len(skills_out.value)),
+            outlier=False,
+            issues=[],
+            type="Count",
+            formatted=str(len(skills_out.value)),
+        )
+
+        field_metas["skills_str"] = FieldMeta(
+            source="derived",
+            confidence=1.0,
+            raw=", ".join(skills_out.value),
+            outlier=False,
+            issues=[],
+            type="Text",
+            formatted=", ".join(skills_out.value),
+        )
+
+        verif_out = FIELD_SPECS["verifications"].type.parse(verifications_raw)
+        field_metas["verifications"] = FieldMeta(
+            source="dom_structural" if verifications_raw else "default",
+            confidence=round(verif_out.confidence, 2),
+            raw=str(verifications_raw or ""),
+            outlier=bool(verif_out.issues),
+            issues=verif_out.issues,
+            type="ListOf(Text)",
+            formatted=", ".join(verif_out.value),
+        )
+
+        badges_out = FIELD_SPECS["badges"].type.parse(badges_raw)
+        field_metas["badges"] = FieldMeta(
+            source="dom_structural" if badges_raw else "default",
+            confidence=round(badges_out.confidence, 2),
+            raw=str(badges_raw or ""),
+            outlier=bool(badges_out.issues),
+            issues=badges_out.issues,
+            type="ListOf(Text)",
+            formatted=", ".join(badges_out.value),
+        )
+
+        port_out = FIELD_SPECS["portfolio_count"].type.parse(portfolio_raw)
+        field_metas["portfolio_count"] = FieldMeta(
+            source="dom_structural" if portfolio_raw > 0 else "default",
+            confidence=round(port_out.confidence, 2),
+            raw=str(portfolio_raw or ""),
+            outlier=("above_soft_max" in port_out.issues or "above_hard_max" in port_out.issues),
+            issues=port_out.issues,
+            type="Count",
+            formatted=str(port_out.value),
+        )
+
+        rating_out = FIELD_SPECS["rating"].type.parse(rating_raw)
+        field_metas["rating"] = FieldMeta(
+            source="dom_structural" if rating_raw > 0.0 else "default",
+            confidence=round(rating_out.confidence, 2),
+            raw=str(rating_raw or ""),
+            outlier=("above_max" in rating_out.issues or "below_min" in rating_out.issues),
+            issues=rating_out.issues,
+            type="Rating",
+            formatted=FIELD_SPECS["rating"].type.format(rating_out.value),
+        )
+
+        rev_out = FIELD_SPECS["reviews_count"].type.parse(reviews_count_raw)
+        field_metas["reviews_count"] = FieldMeta(
+            source="dom_structural" if reviews_count_raw > 0 else "default",
+            confidence=round(rev_out.confidence, 2),
+            raw=str(reviews_count_raw or ""),
+            outlier=("above_soft_max" in rev_out.issues or "above_hard_max" in rev_out.issues),
+            issues=rev_out.issues,
+            type="Count",
+            formatted=str(rev_out.value),
+        )
+
+        # 2. Multi-Tier Stats Extraction
+        stats_raw, provenance_map = self._extract_stats_multi_tier(soup)
+
+        # 3. Stats Parsing & Normalization
+        comp_proj_raw = stats_raw.get("total_completed_projects")
+        comp_proj_out = FIELD_SPECS["total_completed_projects"].type.parse(comp_proj_raw)
+        total_completed = float(comp_proj_out.value)
+        
+        if is_placeholder(comp_proj_raw):
+            comp_proj_src = "derived"
+        else:
+            comp_proj_src = provenance_map.get("total_completed_projects", "derived" if total_completed == 0 else "default")
+
+        field_metas["total_completed_projects"] = FieldMeta(
+            source=comp_proj_src,
+            confidence=round(comp_proj_out.confidence, 2),
+            raw=str(comp_proj_raw or ""),
+            outlier=("above_soft_max" in comp_proj_out.issues or "above_hard_max" in comp_proj_out.issues),
+            issues=comp_proj_out.issues,
+            type="Count",
+            formatted=str(comp_proj_out.value),
+        )
+
+        active_proj_raw = stats_raw.get("active_projects")
+        active_proj_out = FIELD_SPECS["active_projects"].type.parse(active_proj_raw)
+        active_proj = float(active_proj_out.value)
+
+        if is_placeholder(active_proj_raw):
+            active_proj_src = "derived"
+        else:
+            active_proj_src = provenance_map.get("active_projects", "derived" if active_proj == 0 else "default")
+
+        field_metas["active_projects"] = FieldMeta(
+            source=active_proj_src,
+            confidence=round(active_proj_out.confidence, 2),
+            raw=str(active_proj_raw or ""),
+            outlier=("above_soft_max" in active_proj_out.issues or "above_hard_max" in active_proj_out.issues),
+            issues=active_proj_out.issues,
+            type="Count",
+            formatted=str(active_proj_out.value),
+        )
+
+        # Rates Parsing
+        rate_keys = [
+            ("completion_rate", "completion_rate"),
+            ("ontime_delivery_rate", "ontime_delivery_rate"),
+            ("rehire_rate", "rehire_rate"),
+            ("communication_success_rate", "communication_success_rate"),
+        ]
+        rates_parsed: Dict[str, float] = {}
+
+        for stat_key, spec_key in rate_keys:
+            raw_val = stats_raw.get(stat_key)
+            if raw_val is not None and is_placeholder(raw_val):
+                out = FIELD_SPECS[spec_key].type.parse("0.0")
+                src = "derived"
+            elif total_completed > 0:
+                out = FIELD_SPECS[spec_key].type.parse(raw_val if raw_val is not None else "100.0")
+                src = provenance_map.get(stat_key, "dom_structural" if raw_val else "derived")
+            else:
+                out = FIELD_SPECS[spec_key].type.parse(raw_val if raw_val is not None else "0.0")
+                src = provenance_map.get(stat_key, "derived")
+
+            rates_parsed[stat_key] = float(out.value)
+            field_metas[stat_key] = FieldMeta(
+                source=src,
+                confidence=round(out.confidence, 2),
+                raw=str(raw_val or ""),
+                outlier=("above_max" in out.issues or "below_min" in out.issues),
+                issues=out.issues,
+                type="Percentage",
+                formatted=FIELD_SPECS[spec_key].type.format(out.value),
+            )
+
+        # Employment rate
+        emp_raw = stats_raw.get("employment_rate")
+        if emp_raw is not None and is_placeholder(emp_raw):
+            emp_out = FIELD_SPECS["employment_rate"].type.parse("0.0")
+            emp_src = "derived"
+        elif emp_raw is not None and not is_placeholder(emp_raw):
+            emp_out = FIELD_SPECS["employment_rate"].type.parse(emp_raw)
+            emp_src = provenance_map.get("employment_rate", "dom_structural")
+        else:
+            if total_completed > 0:
+                emp_val = min(100.0, round((rates_parsed["completion_rate"] + rates_parsed["rehire_rate"]) / 2.0, 2))
+                emp_out = FIELD_SPECS["employment_rate"].type.parse(str(emp_val))
+                emp_src = "derived"
+            else:
+                emp_out = FIELD_SPECS["employment_rate"].type.parse("0.0")
+                emp_src = "derived"
+
+        rates_parsed["employment_rate"] = float(emp_out.value)
+        field_metas["employment_rate"] = FieldMeta(
+            source=emp_src,
+            confidence=round(emp_out.confidence, 2),
+            raw=str(emp_raw or ""),
+            outlier=("above_max" in emp_out.issues or "below_min" in emp_out.issues),
+            issues=emp_out.issues,
+            type="Percentage",
+            formatted=FIELD_SPECS["employment_rate"].type.format(emp_out.value),
+        )
+
+        # Received projects
+        recv_raw = stats_raw.get("received_projects")
+        if recv_raw and not is_placeholder(recv_raw):
+            recv_out = FIELD_SPECS["received_projects"].type.parse(recv_raw)
+            recv_src = provenance_map.get("received_projects", "dom_structural")
+        else:
+            recv_val = total_completed + active_proj
+            recv_out = FIELD_SPECS["received_projects"].type.parse(str(recv_val))
+            recv_src = "derived"
+
+        field_metas["received_projects"] = FieldMeta(
+            source=recv_src,
+            confidence=round(recv_out.confidence, 2),
+            raw=str(recv_raw or ""),
+            outlier=("above_soft_max" in recv_out.issues or "above_hard_max" in recv_out.issues),
+            issues=recv_out.issues,
+            type="Count",
+            formatted=str(recv_out.value),
+        )
+        received_projects_val = float(recv_out.value)
+
+        # Financial deals
+        deals_raw = stats_raw.get("financial_deals")
+        if deals_raw and not is_placeholder(deals_raw):
+            deals_out = FIELD_SPECS["financial_deals"].type.parse(deals_raw)
+            deals_src = provenance_map.get("financial_deals", "dom_structural")
+        else:
+            deals_out = FIELD_SPECS["financial_deals"].type.parse(str(total_completed))
+            deals_src = "derived"
+
+        field_metas["financial_deals"] = FieldMeta(
+            source=deals_src,
+            confidence=round(deals_out.confidence, 2),
+            raw=str(deals_raw or ""),
+            outlier=("above_soft_max" in deals_out.issues or "above_hard_max" in deals_out.issues),
+            issues=deals_out.issues,
+            type="Count",
+            formatted=str(deals_out.value),
+        )
+        financial_deals_val = float(deals_out.value)
+
+        # Response Time
+        resp_raw = stats_raw.get("avg_response_time_raw") or "غير محدد"
+        resp_out = FIELD_SPECS["avg_response_time_raw"].type.parse(resp_raw)
+        field_metas["avg_response_time_raw"] = FieldMeta(
+            source=provenance_map.get("avg_response_time_raw", "default"),
+            confidence=round(resp_out.confidence, 2),
+            raw=str(resp_raw or ""),
+            outlier=bool(resp_out.issues and "placeholder" not in resp_out.issues),
+            issues=resp_out.issues,
+            type="RelativeTime",
+            formatted=resp_out.value,
+        )
+
+        resp_mins_out = FIELD_SPECS["avg_response_time_minutes"].type.parse(resp_raw)
+        field_metas["avg_response_time_minutes"] = FieldMeta(
+            source="derived",
+            confidence=round(resp_mins_out.confidence, 2),
+            raw=str(resp_raw or ""),
+            outlier=("above_max" in resp_mins_out.issues or "below_min" in resp_mins_out.issues),
+            issues=resp_mins_out.issues,
+            type="Duration",
+            formatted=f"{resp_mins_out.value} mins",
+        )
+        avg_resp_mins = float(resp_mins_out.value)
+
+        # Registration Date
+        reg_raw = stats_raw.get("registration_date_raw") or "2021-01-01"
+        reg_out = FIELD_SPECS["registration_date"].type.parse(reg_raw)
+        field_metas["registration_date"] = FieldMeta(
+            source=provenance_map.get("registration_date_raw", "default"),
+            confidence=round(reg_out.confidence, 2),
+            raw=str(reg_raw or ""),
+            outlier=bool(reg_out.issues and "placeholder" not in reg_out.issues),
+            issues=reg_out.issues,
+            type="ArabicDate",
+            formatted=reg_out.value,
+        )
+        reg_iso = reg_out.value
+
+        field_metas["registration_date_str"] = FieldMeta(
+            source="derived",
+            confidence=1.0,
+            raw=reg_iso,
+            outlier=False,
+            issues=[],
+            type="Text",
+            formatted=reg_iso,
+        )
+
+        # Activity
+        last_act_raw = stats_raw.get("last_active_raw") or "منذ يوم"
+        last_act_out = FIELD_SPECS["last_active"].type.parse(last_act_raw)
+        field_metas["last_active"] = FieldMeta(
+            source=provenance_map.get("last_active_raw", "default"),
+            confidence=round(last_act_out.confidence, 2),
+            raw=str(last_act_raw or ""),
+            outlier=bool(last_act_out.issues and "placeholder" not in last_act_out.issues),
+            issues=last_act_out.issues,
+            type="RelativeTime",
+            formatted=last_act_out.value,
+        )
+
+        field_metas["last_seen"] = FieldMeta(
+            source=provenance_map.get("last_active_raw", "default"),
+            confidence=round(last_act_out.confidence, 2),
+            raw=str(last_act_raw or ""),
+            outlier=bool(last_act_out.issues and "placeholder" not in last_act_out.issues),
+            issues=last_act_out.issues,
+            type="RelativeTime",
+            formatted=last_act_out.value,
+        )
+
+        field_metas["member_since"] = FieldMeta(
+            source=provenance_map.get("registration_date_raw", "default"),
+            confidence=round(reg_out.confidence, 2),
+            raw=str(reg_raw or ""),
+            outlier=False,
+            issues=[],
+            type="Text",
+            formatted=str(reg_raw),
+        )
+
+        # 4. Check Coherence & Outliers
+        stats_dict = {
             "total_completed_projects": total_completed,
             "active_projects": active_proj,
-            "avg_response_time_raw": resp_raw,
+            "received_projects": received_projects_val,
+            "financial_deals": financial_deals_val,
+            "completion_rate": rates_parsed["completion_rate"],
+            "ontime_delivery_rate": rates_parsed["ontime_delivery_rate"],
+            "rehire_rate": rates_parsed["rehire_rate"],
+            "communication_success_rate": rates_parsed["communication_success_rate"],
+            "employment_rate": rates_parsed["employment_rate"],
+            "rating": float(rating_out.value),
+            "reviews_count": int(rev_out.value),
+            "response_time": resp_out.value,
+            "avg_response_time_raw": resp_out.value,
             "avg_response_time_minutes": avg_resp_mins,
+            "last_seen": last_act_out.value,
+            "last_active": last_act_out.value,
+            "member_since": str(reg_raw),
             "registration_date": reg_iso,
             "registration_date_str": reg_iso,
-            "last_active": last_act_raw,
-            "rating": rating,
-            "reviews_count": reviews_count,
-            "portfolio_count": portfolio_count,
-            "skills_count": float(len(skills)),
-            "skills_str": ", ".join(skills),
-            "success_score": success_score,
         }
 
-        return ProfileDetails(
-            name=name,
-            profile_url=url,
-            category="development",
-            title=title,
-            location=location,
-            bio=bio,
-            rating=rating,
-            reviews_count=reviews_count,
-            completion_rate=completion_rate_val,
-            ontime_delivery_rate=ontime_rate_val,
-            rehire_rate=rehire_rate_val,
-            communication_success_rate=comm_rate_val,
-            employment_rate=employment_rate_val,
+        coherence_issues = check_record_coherence(stats_dict)
+        for issue in coherence_issues:
+            if "completed" in issue or "received" in issue:
+                field_metas["received_projects"] = field_metas["received_projects"].model_copy(
+                    update={"issues": field_metas["received_projects"].issues + [issue], "outlier": True}
+                )
+            elif "rates" in issue:
+                for rk in ["completion_rate", "ontime_delivery_rate", "rehire_rate", "communication_success_rate"]:
+                    field_metas[rk] = field_metas[rk].model_copy(
+                        update={"issues": field_metas[rk].issues + [issue], "outlier": True}
+                    )
+            elif "reviews" in issue:
+                field_metas["rating"] = field_metas["rating"].model_copy(
+                    update={"issues": field_metas["rating"].issues + [issue], "outlier": True}
+                )
+
+        # Collect outlier fields
+        for fname, fmeta in field_metas.items():
+            if fmeta.outlier or any(iss in fmeta.issues for iss in ["above_soft_max", "above_hard_max", "above_max", "below_min"]):
+                outlier_fields.append(fname)
+
+        if outlier_fields:
+            log.warning(f"Outlier detected for {url} on fields: {outlier_fields}")
+
+        # Quality determination
+        all_issues = [iss for fm in field_metas.values() for iss in fm.issues]
+        if any(iss in all_issues for iss in ["above_hard_max", "below_min", "internal_error"]):
+            quality: Literal["ok", "suspect", "bad", "quarantine"] = "bad"
+        elif any(iss in all_issues for iss in ["above_soft_max", "above_max", "incoherent_received_less_than_completed", "incoherent_rates_with_zero_projects", "incoherent_rating_with_zero_reviews"]):
+            quality = "suspect"
+        else:
+            quality = "ok"
+
+        metadata = ProfileMetadata(
+            quality=quality,
+            schema_version="2.0",
+            parse_signals=signals,
+            outlier_fields=list(set(outlier_fields)),
+            fields=field_metas,
+        )
+
+        profile_stats = ProfileStats(
+            rating=float(rating_out.value),
+            reviews_count=int(rev_out.value),
+            completion_rate=rates_parsed["completion_rate"],
+            ontime_delivery_rate=rates_parsed["ontime_delivery_rate"],
+            rehire_rate=rates_parsed["rehire_rate"],
+            communication_success_rate=rates_parsed["communication_success_rate"],
+            employment_rate=rates_parsed["employment_rate"],
             total_completed_projects=total_completed,
             active_projects=active_proj,
             received_projects=received_projects_val,
             financial_deals=financial_deals_val,
-            response_time=resp_raw,
-            avg_response_time_raw=resp_raw,
+            response_time=resp_out.value,
+            avg_response_time_raw=resp_out.value,
             avg_response_time_minutes=avg_resp_mins,
-            last_seen=last_act_raw,
-            last_active=last_act_raw,
-            member_since=reg_raw,
+            last_seen=last_act_out.value,
+            last_active=last_act_out.value,
+            member_since=str(reg_raw),
             registration_date=reg_iso,
             registration_date_str=reg_iso,
-            verifications=verifications,
-            badges=badges,
-            parse_confidence="ok",
-            parse_signals=signals,
-            skills=skills,
-            skills_count=float(len(skills)),
-            skills_str=", ".join(skills),
-            portfolio_count=portfolio_count,
-            success_score=success_score,
-            rank=1,
-            stats=complete_stats,
         )
+
+        return ProfileDetails(
+            name=name_out.value,
+            profile_url=url,
+            avatar_url=avatar_out.value,
+            category="development",
+            title=title_out.value,
+            location=loc_out.value,
+            bio=bio_out.value,
+            skills=skills_out.value,
+            skills_count=float(len(skills_out.value)),
+            skills_str=", ".join(skills_out.value),
+            portfolio_count=float(port_out.value),
+            verifications=verif_out.value,
+            badges=badges_out.value,
+            stats=profile_stats,
+            metadata=metadata,
+            rank=1,
+            scraped_at=datetime.now().isoformat(),
+        )
+
+    def _extract_avatar(self, soup: BeautifulSoup) -> str:
+        """Extract profile avatar / picture URL with fallback for missing/default avatar."""
+        selectors = [
+            ".profile-card--avatar img",
+            "img.profile-avatar",
+            "img.uavatar",
+            ".user-avatar img",
+            ".profile-header img",
+            "img[class*='avatar']",
+        ]
+        for sel in selectors:
+            for img in soup.select(sel):
+                src = img.get("src") or img.get("data-src") or img.get("data-lazy-src") or ""
+                src = src.strip()
+                if not src:
+                    continue
+                # Ignore badge SVGs or other icons if matched accidentally
+                if not src.endswith(".svg") and "badge" not in src:
+                    if src.startswith("//"):
+                        src = "https:" + src
+                    elif src.startswith("/"):
+                        src = "https://mostaql.com" + src
+                    return src
+                elif any(k in src for k in ["avatars.hsoubcdn.com", "user-avatar", "avatar"]):
+                    if src.startswith("//"):
+                        src = "https:" + src
+                    elif src.startswith("/"):
+                        src = "https://mostaql.com" + src
+                    return src
+
+        # General fallback for any img with hsoub avatar cdn
+        for img in soup.find_all("img"):
+            src = (img.get("src") or img.get("data-src") or "").strip()
+            if "avatars.hsoubcdn.com" in src:
+                if src.startswith("//"):
+                    src = "https:" + src
+                return src
+
+        return ""
 
     def _extract_name(self, soup: BeautifulSoup, url: str) -> str:
         for sel in ["h1.profile-name bdi", "h1 bdi", "h1.usercard__username bdi", ".profile-name", "h1"]:
@@ -382,7 +760,31 @@ class ParsingService:
         return "غير محدد"
 
     def _extract_bio(self, soup: BeautifulSoup) -> str:
-        """Extract profile biography / about section."""
+        """Extract profile biography / about section with paragraph structure preserved."""
+        def format_bio_element(el) -> str:
+            if not el:
+                return ""
+            paragraphs = []
+            p_tags = el.find_all(["p", "li"])
+            if p_tags:
+                for p in p_tags:
+                    for br in p.find_all(["br", "hr"]):
+                        br.replace_with("\n")
+                    p_text = p.get_text().strip()
+                    lines = [re.sub(r"[ \t]+", " ", l).strip() for l in p_text.split("\n")]
+                    p_clean = "\n".join(l for l in lines if l)
+                    if p_clean:
+                        paragraphs.append(p_clean)
+                if paragraphs:
+                    return "\n\n".join(paragraphs)
+
+            for br in el.find_all(["br", "hr"]):
+                br.replace_with("\n")
+            text = el.get_text().strip()
+            lines = [re.sub(r"[ \t]+", " ", l).strip() for l in text.split("\n")]
+            text = "\n".join(lines)
+            return re.sub(r"\n{3,}", "\n\n", text).strip()
+
         # Check specific bio containers
         selectors = [
             "#about_content",
@@ -394,7 +796,7 @@ class ParsingService:
         for sel in selectors:
             el = soup.select_one(sel)
             if el:
-                txt = el.get_text("\n", strip=True)
+                txt = format_bio_element(el)
                 if txt:
                     return txt
 
@@ -402,12 +804,11 @@ class ParsingService:
         for h in soup.find_all(["h2", "h3", "h4", "h5"]):
             header_txt = h.get_text(strip=True)
             if any(k in header_txt for k in ["نبذة عني", "عني", "نبذة"]):
-                # Look at next sibling or parent panel/card content
                 parent_card = h.find_parent("div", class_=lambda c: c and any(x in c for x in ["card", "panel", "widget"]))
                 if parent_card:
                     body = parent_card.select_one(".carda__content, .card__body, .panel-body, .widget__content")
                     if body:
-                        txt = body.get_text("\n", strip=True)
+                        txt = format_bio_element(body)
                         if txt:
                             return txt
                 
@@ -415,12 +816,12 @@ class ParsingService:
                 curr = h.find_next_sibling()
                 bio_parts = []
                 while curr and curr.name not in ["h1", "h2", "h3", "h4", "h5"]:
-                    t = curr.get_text("\n", strip=True)
+                    t = format_bio_element(curr)
                     if t:
                         bio_parts.append(t)
                     curr = curr.find_next_sibling()
                 if bio_parts:
-                    return "\n".join(bio_parts).strip()
+                    return "\n\n".join(bio_parts).strip()
 
         return ""
 
@@ -545,35 +946,57 @@ class ParsingService:
 
         return 0.0
 
-    def _extract_stats_multi_tier(self, soup: BeautifulSoup) -> Dict[str, Any]:
-        """Combine Structural (Tier 1), Label Adjacency (Tier 2), and Token Inference (Tier 3)."""
+    def _extract_stats_multi_tier(self, soup: BeautifulSoup) -> Tuple[Dict[str, Any], Dict[str, Source]]:
+        """Combine Structural (Tier 1), Label Adjacency (Tier 2), and Token Inference (Tier 3) with provenance tags."""
+        provenance: Dict[str, Source] = {}
+
         # Tier 1: Structural Panel Extract
         structural_results = structural_profile_extract(soup)
 
         # Tier 2: Label-Driven DOM Adjacency Scanning
         label_results, _ = label_driven_extract(soup)
 
-        # Merge Tier 1 and Tier 2 (Structural takes precedence for structured panels)
-        merged = {**label_results, **structural_results}
+        # Track sources: Label driven first, then overwrite with structural
+        merged = {}
+        for k, v in label_results.items():
+            merged[k] = v
+            provenance[k] = "dom_label"
+
+        for k, v in structural_results.items():
+            merged[k] = v
+            provenance[k] = "dom_structural"
 
         # Check if key stats are missing; if so, run Tier 3 Inference Engine ONLY for un-extracted fields (not placeholders)
+        has_uncalculated_rates = any(
+            is_placeholder(merged.get(r))
+            for r in ["completion_rate", "ontime_delivery_rate", "rehire_rate", "employment_rate"]
+            if r in merged
+        )
+        if has_uncalculated_rates:
+            if "total_completed_projects" not in merged:
+                merged["total_completed_projects"] = "0"
+                provenance["total_completed_projects"] = "derived"
+            if "active_projects" not in merged:
+                merged["active_projects"] = "0"
+                provenance["active_projects"] = "derived"
+
         needed_fields = [
             "completion_rate", "ontime_delivery_rate", "rehire_rate",
             "communication_success_rate", "total_completed_projects",
             "active_projects", "avg_response_time_raw", "registration_date_raw",
             "last_active_raw",
         ]
-        # Only consider missing if the field was genuinely not found at all in the document.
-        # If the document contained a placeholder like 'لم يحسب بعد', we DO NOT want inference to guess numbers from random body text.
         missing = [f for f in needed_fields if f not in merged]
         if missing:
             inference_results = infer_fields(soup, target_fields=missing)
             for f in missing:
                 if f in inference_results and inference_results[f].get("value"):
-                    # Only accept if confidence is reasonable
-                    merged[f] = inference_results[f]["value"]
+                    val = inference_results[f]["value"]
+                    if not is_placeholder(val) and inference_results[f].get("confidence", 0) >= 0.20:
+                        merged[f] = val
+                        provenance[f] = "inferred"
 
-        return merged
+        return merged, provenance
 
     def _get_page_confidence(self, html: str, soup: BeautifulSoup) -> Tuple[int, List[str]]:
         signals = []

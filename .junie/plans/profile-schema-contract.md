@@ -12,15 +12,19 @@ Goal: turn the profile record into a **strong, self-describing, schema-validated
 1. Survey 5 real profile HTML pages to learn the actual value space of every field.
 2. Encode that knowledge as a declarative field spec + Pydantic model (single source of truth).
 3. Build a reusable **value-type library** (`Percentage`, `Count`, `Rating`, `Money`, `Duration`, `ArabicDate`, `Text`, `Enum`, `ListOf`, `OneOf`) so every key declares *what kind of value it holds*, how it is parsed from raw Arabic HTML text, its min/max and its formatting — instead of ad-hoc `clean_numeric_value` calls scattered across the parser.
-4. Attach a per-field `metadata` block: how the value was obtained, how confident we are, whether it is an outlier.
-5. Never silently fabricate: raw parsed value is kept as-is, violations are warned about and flagged — not overwritten.
-6. Never let an exception escape: every parse/coerce step is total — it always returns a value plus an issue list.
+4. Build an **Arabic linguistic normalization engine** (`src/schema/arabic.py`) handling:
+   - Orthographic normalization: Alif forms (`أ`, `إ`, `آ`, `ٱ` → `ا`), Taa Marboota / Haa (`ة` ↔ `ه`), Yaa / Alef Maksura (`ى` ↔ `ي`), Hamzas (`ؤ`, `ئ`, `ء`), Tashkeel / Harakat stripping, Tatweel (`ـ`), and bidirectional / zero-width marks.
+   - Grammatical number inflection for singular, dual, and plural (**مفرد، مثنى، جمع**) without explicit numerals (e.g. `يوم` = 1, `يومان` / `يومين` = 2, `أيام` = 3-10; `سنتان` / `سنتين` = 2, `سنوات` = 3-10; `ساعتان` / `ساعتين` = 2; `مشروعان` / `مشروعين` = 2, `مشاريع`), plus pronoun and preposition prefix/suffix stripping (`منذ`, `خلال`, `في`, `له`, `لها`, `بـ`, `لـ`).
+5. Attach a per-field `metadata` block: how the value was obtained, how confident we are, whether it is an outlier.
+6. Never silently fabricate: raw parsed value is kept as-is, violations are warned about and flagged — not overwritten.
+7. Never let an exception escape: every parse/coerce step is total — it always returns a value plus an issue list.
 
 ### Scope
 
 **In scope**
 - Fixture corpus: 5+ real profile HTML files saved under `test/fixtures/profiles/`.
 - Field survey tooling that reports observed labels, raw strings and value ranges per field.
+- Arabic linguistic normalization module (`src/schema/arabic.py`) covering orthography (Alif, Taa-marboota, Yaa, Tashkeel) and grammatical number inflections (مفرد، مثنى، جمع) + pronouns/prepositions.
 - A `src/schema/types.py` value-type library with composable types and union support (`OneOf(Count(), Text())`).
 - Exhaustive error handling: every raw→typed conversion returns `ParseOutcome(value, raw, issues, confidence)` and never raises.
 - `ProfileDetails` converted to a Pydantic model in `src/models.py` with a nested `stats` object and slim top-level.
@@ -47,6 +51,7 @@ Goal: turn the profile record into a **strong, self-describing, schema-validated
 - **FR4 — No duplication.** Numeric/temporal metrics live under `stats`; top level keeps identity/profile fields only (`name`, `profile_url`, `title`, `location`, `bio`, `skills`, `verifications`, `badges`, `rank`, `scraped_at`, `metadata`).
 - **FR5 — Flat export preserved.** CSV/Parquet/DuckDB exports still contain today's flat column names.
 - **FR6 — Dataset report.** A pandas-based checker prints per-field null/default/outlier counts, min/max/percentiles and top offenders.
+- **FR7 — Arabic linguistic normalization.** Text and numeric parsers resolve Arabic orthographic variants (Alif, Taa-marboota/Haa, Yaa/Alef Maksura, diacritics) and correctly map singular/dual/plural inflections (مفرد، مثنى، جمع) and pronouns to their exact numeric and temporal meanings without failing.
 
 ### Non-Functional Requirements
 - Zero-null guarantee from `StrictZeroNullValidator` is preserved.
@@ -81,10 +86,14 @@ Goal: turn the profile record into a **strong, self-describing, schema-validated
 - Download 5 deliberately diverse profiles: an empty/new account (`Smartify`), a heavy top freelancer (hundreds of projects), a mid-range one, a profile with partly-calculated stats, and a non-Arabic/edge-name one.
 - `test/tools/survey_fields.py` walks each fixture, and for every field prints: matched label text, raw cell string, which tier produced it, parsed value. Output is aggregated into `outsourcing/field_survey/field_domains.md` — the evidence table for the spec.
 
-**1b. Value-type library (`src/schema/types.py`)**
+**1b. Arabic linguistic normalization & Value-type library (`src/schema/arabic.py`, `src/schema/types.py`)**
+- `src/schema/arabic.py`:
+  - Orthographic normalizer: Alif normalization (`أ`, `إ`, `آ`, `ٱ` → `ا`), Taa Marboota / Haa normalization (`ة` ↔ `ه`), Yaa / Alef Maksura (`ى` ↔ `ي`), Hamzas (`ؤ`, `ئ`, `ء`), stripping Harakat/Tashkeel, Tatweel (`ـ`), and invisible Unicode control characters (LRM, RLM, ZWNJ, etc.).
+  - Grammatical number inflection engine (مفرد، مثنى، جمع): maps singular, dual (`ـان` / `ـين`), and plural forms of units (`يوم/يومان/يومين/أيام`, `ساعة/ساعتان/ساعتين/ساعات`, `دقيقة/دقيقتان/دقيقتين/دقائق`, `شهر/شهران/شهرين/أشهر/شهور`, `سنة/عام/سنتان/سنتين/عامان/عامين/سنوات/أعوام`, `مشروع/مشروعان/مشروعين/مشاريع`, `تقييم/تقييمان/تقييمين/تقييمات`) directly to their multiplier/count.
+  - Pronoun and preposition phrase parser: handles temporal phrases like `منذ سنتين` (2 years ago), `خلال يومين` (2 days), `منذ ساعات`, `منذ دقيقة` with attached prepositions (`منذ`, `خلال`, `في`, `قبل`, `بعد`) and pronouns.
 - Abstract `ValueType` base with `parse`, `validate`, `format`, `pandas_dtype`, `default`.
 - Concrete types (names illustrative; the final set is decided by the survey): `Text`, `Enum`, `Count`, `Percentage`, `Rating`, `Money`, `Duration`, `ArabicDate`, `RelativeTime`, `ListOf`, `OneOf` (union).
-- Shared normalization used by all numeric types: Arabic-Indic digit folding (`٠-٩`, `۰-۹`), thousands separators (`,`, `٬`), `%`, `+`, parentheses `(0)`, RTL/LTR marks, NBSP, and placeholder detection (`لم يحسب بعد`, `غير محدد`, `-`, `—`).
+- Shared normalization used by all numeric types: integrates `src/schema/arabic.py`, Arabic-Indic digit folding (`٠-٩`, `۰-۹`), thousands separators (`,`, `٬`), `%`, `+`, parentheses `(0)`, RTL/LTR marks, NBSP, and placeholder detection (`لم يحسب بعد`, `غير محدد`, `-`, `—`).
 - Every type declares its pandas dtype (`Int64`, `Float64`, `string`, `CategoricalDtype([...])`, `datetime64[ns]`) and internally reuses `pd.to_numeric` / `pd.to_datetime` with `errors="coerce"`.
 - `OneOf` tries member types in order and reports the winning branch in `ParseOutcome.matched_type`.
 
@@ -204,6 +213,7 @@ test/tools/survey_fields.py            (new) field/value survey
 test/tools/reparse_collected.py        (new) re-parse cached HTML
 outsourcing/field_survey/field_domains.md (new) evidence table
 src/schema/__init__.py                 (new) public re-exports
+src/schema/arabic.py                   (new) Arabic linguistic normalizer & inflection parser
 src/schema/types.py                    (new) ValueType library + ParseOutcome
 src/schema/spec.py                     (new) FieldSpec + FIELD_SPECS
 src/schema/frame.py                    (new) pandas dtype map + frame-level checks
@@ -213,6 +223,7 @@ src/utils/validators.py                (mod) SchemaValidator + dataset_report
 src/services/exporter.py               (mod) flatten stats for CSV/Parquet
 src/services/analyzer.py               (mod) normalization aligned to spec
 src/services/orchestrator.py           (mod) model_dump instead of asdict
+test/test_arabic_normalization.py      (new) orthography, dual/plural and pronoun tests
 test/test_value_types.py               (new) per-type parse/validate/format matrix
 test/test_schema_spec.py               (new) bound/coherence rules
 test/test_fixture_profiles.py          (new) golden expectations per fixture
@@ -259,7 +270,11 @@ All bounds come from the fixture survey, and every fixture becomes a golden test
 - Flat CSV export still has the legacy column names consumed by `dashboard/db/schema.py`.
 
 ### Edge Cases
-- Value-type matrix: Arabic-Indic digits (`٨٢`), `1,234`, `‎85%‎`, `(0)`, `+500`, empty string, `None`, HTML entities and a 10k-char bio fed to every type — each returns the default plus a precise issue code and never raises.
+- Value-type & Arabic normalization matrix:
+  - Orthographic variations: `أحمد` / `إبراهيم` / `آلاء` / `المشروع` (Alif variants), `خبرة` / `خبره` (Taa-marboota vs Haa), `علي` / `على` (Yaa vs Alef Maksura), Tashkeel (`مُسْتَقِلّ`), Tatweel (`مـسـتـقـل`).
+  - Grammatical inflections (مفرد، مثنى، جمع): `سنة` (1 yr), `سنتان`/`سنتين` (2 yrs), `سنوات` (years), `يومان`/`يومين` (2 days), `ساعتان`/`ساعتين` (2 hours), `دقيقتان`/`دقيقتين` (2 mins), `مشروعان`/`مشروعين` (2 projects).
+  - Prepositional/pronoun phrases: `منذ سنتين`, `خلال يومين`, `منذ ساعتين`, `منذ عام`, `منذ لحظات`.
+  - Arabic-Indic digits (`٨٢`), `1,234`, `‎85%‎`, `(0)`, `+500`, empty string, `None`, HTML entities and a 10k-char bio fed to every type — each returns the default plus a precise issue code and never raises.
 - `OneOf(Count(), Text())` on both a numeric and a textual raw value; `matched_type` recorded correctly.
 - Placeholder `لم يحسب بعد` in every stats row → defaults, never inference.
 - A crafted HTML with a bio containing `ESP8266`, `100%`, `2019` → those tokens must not leak into stats.
@@ -268,13 +283,13 @@ All bounds come from the fixture survey, and every fixture becomes a golden test
 - Zero-null: `StrictZeroNullValidator` still passes for every fixture.
 
 ### Test Changes
-- New: `test/test_schema_spec.py`, `test/test_fixture_profiles.py`.
+- New: `test/test_arabic_normalization.py`, `test/test_schema_spec.py`, `test/test_fixture_profiles.py`.
 - Updated: `test/test_parser_zero_null.py`, `test/test_parser.py`, `test/test_parser3.py`, `test/test_analyzer.py` for the nested `stats` / Pydantic access shape.
 - Run with `python -m pytest test/` (note: bare `pytest` fails to import `src`).
 
 # Delivery Steps
 
-###   Step 1: Build the fixture corpus and survey the real value space
+### ✓ Step 1: Build the fixture corpus and survey the real value space
 Five real profile HTML snapshots exist in the repo and a written evidence table describes the observed value space of every field.
 
 - Download 5 diverse profiles into `test/fixtures/profiles/`: an empty/new account (`mostaql.com/u/Smartify`), a high-volume top freelancer, a mid-range freelancer, a partially-calculated profile, and a latin-name/edge-layout profile.
@@ -282,16 +297,18 @@ Five real profile HTML snapshots exist in the repo and a written evidence table 
 - Aggregate results into `outsourcing/field_survey/field_domains.md`: observed labels, distinct raw strings, min/max numeric values, and placeholder variants.
 - Record concrete findings that will drive bounds (rate range, realistic project counts, response-time phrasings, date formats).
 
-###   Step 2: Build the value-type library
-`src/schema/types.py` provides composable, total value types that turn raw Arabic HTML text into validated, formatted values.
+### ✓ Step 2: Build Arabic linguistic normalization and value-type library
+`src/schema/arabic.py` and `src/schema/types.py` provide robust linguistic normalization and composable, total value types that turn raw Arabic HTML text into validated, formatted values.
 
+- Implement `src/schema/arabic.py` for orthographic normalization: Alif folding (`أ`, `إ`, `آ`, `ٱ` → `ا`), Taa-marboota/Haa (`ة` ↔ `ه`), Yaa/Alef Maksura (`ى` ↔ `ي`), Hamzas, Tashkeel/Harakat stripping, and Tatweel removal.
+- Implement grammatical number inflection & pronoun parser for singular, dual, and plural (**مفرد، مثنى، جمع**) across units and temporal phrases (`يوم/يومان/يومين/أيام`, `سنة/سنتان/سنتين/سنوات`, `ساعة/ساعتان/ساعتين/ساعات`, `مشروع/مشروعان/مشروعين/مشاريع`, `منذ سنتين`, `خلال يومين`).
 - Add `ParseOutcome` and the abstract `ValueType` (`parse`, `validate`, `format`, `pandas_dtype`, `default`), guarding every call so an internal exception becomes an `internal_error` issue instead of propagating.
-- Implement shared normalization: Arabic-Indic digit folding, thousands separators, `%`/`+`/parentheses stripping, RTL marks, NBSP, and placeholder detection (`لم يحسب بعد`, `غير محدد`, `-`).
+- Implement shared normalization: integrate `arabic.py`, Arabic-Indic digit folding, thousands separators, `%`/`+`/parentheses stripping, RTL marks, NBSP, and placeholder detection (`لم يحسب بعد`, `غير محدد`, `-`).
 - Implement the concrete types: `Text`, `Enum`, `Count`, `Percentage`, `Rating`, `Money`, `Duration`, `ArabicDate`, `RelativeTime`, `ListOf`, and the `OneOf` union recording `matched_type`.
 - Give each type an explicit pandas dtype (`Int64`, `Float64`, `string`, `CategoricalDtype`, `datetime64[ns]`) and reuse `pd.to_numeric` / `pd.to_datetime` with `errors="coerce"` internally.
-- Add `test/test_value_types.py` covering the malformed-input matrix for every type.
+- Add `test/test_arabic_normalization.py` and `test/test_value_types.py` covering orthography, inflections, and the malformed-input matrix for every type.
 
-###   Step 3: Declare the field spec module
+### ✓ Step 3: Declare the field spec module
 `src/schema/spec.py` is the single source of truth: every key bound to a value type, with labels, bounds and coherence rules.
 
 - Add a `FieldSpec` dataclass (`name`, `group`, `type`, `labels`, `derived_from`, `required`) and populate `FIELD_SPECS` for all profile fields from the survey evidence.
@@ -299,7 +316,7 @@ Five real profile HTML snapshots exist in the repo and a written evidence table 
 - Encode coherence rules: `received_projects >= total_completed_projects`, zero completed projects implies zero rates, zero reviews implies zero rating.
 - Add `src/schema/frame.py` exposing `pandas_dtypes()`, `apply_dtypes(df)` and vectorised `between`/`clip`-based frame checks reused by the exporter and reports.
 
-###   Step 4: Convert the profile models to Pydantic with nested stats and metadata
+### ✓ Step 4: Convert the profile models to Pydantic with nested stats and metadata
 `ProfileDetails` is a Pydantic v2 model with a slim top level, a nested `ProfileStats`, and a `ProfileMetadata` block — no duplicated keys.
 
 - In `src/models.py`, add `FieldMeta`, `ProfileMetadata`, `ProfileStats` and rewrite `ProfileDetails` as a frozen `BaseModel`.
@@ -307,7 +324,7 @@ Five real profile HTML snapshots exist in the repo and a written evidence table 
 - Add a model validator that runs the `FIELD_SPECS` bound and coherence checks, keeps the raw value, and records `outlier`/`issues` in `metadata`.
 - Add `to_dict()` / `to_flat_dict()` helpers and migrate `asdict()` call sites in `src/services/orchestrator.py`, `src/services/exporter.py`, `src/utils/validators.py` and `test/diagnose_nulls.py`.
 
-###   Step 5: Emit provenance and confidence from the parser
+### ✓ Step 5: Emit provenance and confidence from the parser
 Every parsed field carries where it came from and how confident the parser is.
 
 - Change `_extract_stats` in `src/services/parser.py` to return `(values, provenance)`, tagging Tier 1 as `dom_structural`, Tier 2 as `dom_label`, Tier 3 as `inferred`.
@@ -317,7 +334,7 @@ Every parsed field carries where it came from and how confident the parser is.
 - Assemble `ProfileStats` + `ProfileMetadata` in `parse_profile`, set `metadata.quality` from the collected issues, and `log.warning` each outlier together with the profile URL.
 - Keep the existing Tier-3 restriction so placeholders (`لم يحسب بعد`) never trigger inference.
 
-###   Step 6: Add schema validation and the pandas dataset report
+### ✓ Step 6: Add schema validation and the pandas dataset report
 A schema validator runs next to the zero-null barrier and a pandas report summarises dataset health.
 
 - Extend `src/utils/validators.py` with `SchemaValidator.validate_profile(profile) -> list[Issue]` driven by `FIELD_SPECS`, preserving the existing `StrictZeroNullValidator` behaviour.
@@ -326,7 +343,7 @@ A schema validator runs next to the zero-null barrier and a pandas report summar
 - Write records with `metadata.quality != "ok"` to `outsourcing/quarantine_profiles.json` for review.
 - Add `test/tools/reparse_collected.py` to re-parse `collected/cache/` into the new record shape and print the report.
 
-###   Step 7: Keep exports and the dashboard on flat columns
+### ✓ Step 7: Keep exports and the dashboard on flat columns
 CSV, Parquet and DuckDB outputs keep their current flat column names despite the nested JSON shape.
 
 - Update `src/services/exporter.py` to flatten `stats.*` into top-level columns and append `quality` / `outlier_fields`.
@@ -334,7 +351,7 @@ CSV, Parquet and DuckDB outputs keep their current flat column names despite the
 - Align record normalization in `src/services/analyzer.py` with the spec defaults and coherence rules.
 - Verify `src/dashboard.py` and `dashboard/db/schema.py` resolve every column they expect against the new export.
 
-###   Step 8: Lock the behaviour with fixture-driven tests
+### ✓ Step 8: Lock the behaviour with fixture-driven tests
 The fixture corpus and the schema rules are covered by tests and the whole suite passes.
 
 - Add `test/test_fixture_profiles.py` with golden expectations per fixture, asserting values, `metadata.fields[...].source` and `quality`.
