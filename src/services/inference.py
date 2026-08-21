@@ -509,9 +509,23 @@ def score_candidate(candidate: Candidate, tokens: List[Token], stem_counts: Dict
         if candidate.types & forbidden:
             score -= 5.0
         elif candidate.types & profile["expected_types"]:
-            score += WEIGHTS["TYPE_WEIGHT"]
+            if best_stem_hit:
+                score += WEIGHTS["TYPE_WEIGHT"]
         elif candidate.types & profile.get("expected_types_weak", set()):
-            score += WEIGHTS["TYPE_WEIGHT"] * 0.25
+            if best_stem_hit:
+                score += WEIGHTS["TYPE_WEIGHT"] * 0.25
+
+        # Penalize year-like numbers or phone-like numbers for project metrics
+        if field in ("total_completed_projects", "active_projects", "received_projects", "financial_deals"):
+            try:
+                num_val = float(re.sub(r"[^\d.]", "", candidate.raw_text.translate(ARABIC_TO_ASCII)))
+                if num_val >= 10000 or (1950 <= num_val <= 2099 and not unit_hit):
+                    score -= 10.0
+            except Exception:
+                pass
+
+        if not best_stem_hit and not unit_hit:
+            score = -10.0
 
         candidate.scores[field] = score
 
@@ -570,6 +584,14 @@ def resolve_fields(candidates: List[Candidate], target_fields: Optional[List[str
             continue
         scored.sort(key=lambda pair: pair[0], reverse=True)
         top_prob, top_cand = scored[0]
+        if top_cand.scores.get(field, 0.0) <= 0.0:
+            results[field] = {
+                "value": None,
+                "confidence": 0.0,
+                "strategy": "no_positive_match",
+                "competing_candidates": [],
+            }
+            continue
         runner_ups = scored[1:4]
         margin = top_prob - (runner_ups[0][0] if runner_ups else 0.0)
         strategy = "local_inference" if margin >= LOCAL_CONFIDENCE_MARGIN else "global_inference_ambiguous"

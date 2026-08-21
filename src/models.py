@@ -22,25 +22,28 @@ class ProfileDetails:
     category: str = "development"
     title: str = "مستقل"
     location: str = "غير محدد"
+    bio: str = ""
     rating: float = 0.0
     reviews_count: int = 0
-    completion_rate: float = 100.0
-    ontime_delivery_rate: float = 100.0
-    rehire_rate: float = 100.0
-    communication_success_rate: float = 100.0
-    employment_rate: float = 100.0
+    completion_rate: float = 0.0
+    ontime_delivery_rate: float = 0.0
+    rehire_rate: float = 0.0
+    communication_success_rate: float = 0.0
+    employment_rate: float = 0.0
     total_completed_projects: float = 0.0
     active_projects: float = 0.0
     received_projects: float = 0.0
     financial_deals: float = 0.0
-    response_time: str = "خلال يوم"
-    avg_response_time_raw: str = "خلال يوم"
+    response_time: str = "غير محدد"
+    avg_response_time_raw: str = "غير محدد"
     avg_response_time_minutes: float = 1440.0
     last_seen: str = "منذ يوم"
     last_active: str = "منذ يوم"
     member_since: str = "2021-01-01"
     registration_date: str = "2021-01-01T00:00:00"
     registration_date_str: str = "2021-01-01T00:00:00"
+    verifications: List[str] = field(default_factory=list)
+    badges: List[str] = field(default_factory=list)
     parse_confidence: str = "ok"
     parse_signals: List[str] = field(default_factory=list)
     skills: List[str] = field(default_factory=list)

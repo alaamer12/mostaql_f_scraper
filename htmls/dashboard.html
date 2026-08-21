@@ -1,0 +1,1657 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Mostaql Analytics Dashboard</title>
+
+  <!-- DaisyUI v5 standalone CSS -->
+  <link href="https://cdn.jsdelivr.net/npm/daisyui@5/daisyui.css" rel="stylesheet" type="text/css" />
+  <!-- Tailwind CSS v4 browser build -->
+  <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
+  <!-- ApexCharts -->
+  <script src="https://cdn.jsdelivr.net/npm/apexcharts"></script>
+  <!-- Lodash -->
+  <script src="https://cdn.jsdelivr.net/npm/lodash@4.17.21/lodash.min.js"></script>
+  <!-- Fuse.js v6 (stable UMD build) -->
+  <script src="https://cdn.jsdelivr.net/npm/fuse.js@6.6.2/dist/fuse.min.js"></script>
+  <!-- Alpine.js (must be last, deferred) -->
+  <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap');
+
+    :root {
+      --color-brand: #2563eb;
+      --color-brand-soft: #eff6ff;
+      --color-surface: #f8fafc;
+      --color-border: #e2e8f0;
+      --color-text-muted: #64748b;
+    }
+
+    * { font-family: 'Inter', sans-serif; }
+    .font-mono { font-family: 'IBM Plex Mono', monospace; }
+
+    .kpi-card {
+      background-color: #ffffff;
+      border-radius: 1rem;
+      border: 1px solid #e2e8f0;
+      padding: 1.25rem;
+      display: flex;
+      flex-direction: column;
+      gap: 0.5rem;
+      box-shadow: 0 1px 2px 0 rgb(0 0 0 / 0.05);
+      transition: box-shadow 0.2s;
+    }
+    .kpi-card:hover {
+      box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1);
+    }
+
+    .kpi-icon-wrap {
+      width: 2.5rem;
+      height: 2.5rem;
+      border-radius: 0.75rem;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 1.125rem;
+    }
+
+    .chart-card {
+      background-color: #ffffff;
+      border-radius: 1rem;
+      border: 1px solid #e2e8f0;
+      box-shadow: 0 1px 2px 0 rgb(0 0 0 / 0.05);
+      overflow: hidden;
+    }
+
+    .chart-description {
+      font-size: 0.75rem;
+      color: #64748b;
+      margin-left: 1rem;
+      margin-top: 0.25rem;
+      margin-bottom: 0.75rem;
+      line-height: 1.625;
+      border-left: 2px solid #e2e8f0;
+      padding-left: 0.75rem;
+    }
+
+    .insight-list {
+      display: flex;
+      flex-direction: column;
+      gap: 0.25rem;
+      padding: 0 1.25rem 1rem;
+    }
+
+    .insight-item {
+      font-size: 0.75rem;
+      color: #475569;
+      display: flex;
+      align-items: flex-start;
+      gap: 0.5rem;
+    }
+
+    .insight-dot {
+      width: 0.375rem;
+      height: 0.375rem;
+      border-radius: 9999px;
+      background-color: #60a5fa;
+      margin-top: 0.375rem;
+      flex-shrink: 0;
+    }
+
+    .tier-top { background-color: #ecfdf5; color: #065f46; border-color: #a7f3d0; }
+    .tier-mid { background-color: #fffbeb; color: #92400e; border-color: #fde68a; }
+    .tier-low { background-color: #fef2f2; color: #991b1b; border-color: #fecaca; }
+
+    .tab-btn {
+      padding: 0.5rem 1rem;
+      font-size: 0.875rem;
+      font-weight: 500;
+      border-radius: 0.5rem;
+      transition: all 0.15s;
+      cursor: pointer;
+      border: none;
+      background: transparent;
+    }
+    .tab-btn.active {
+      background-color: #2563eb;
+      color: #ffffff;
+      box-shadow: 0 1px 2px 0 rgb(0 0 0 / 0.05);
+    }
+    .tab-btn:not(.active) {
+      color: #475569;
+    }
+    .tab-btn:not(.active):hover {
+      background-color: #f1f5f9;
+    }
+
+    .add-chart-btn {
+      width: 100%;
+      border: 2px dashed #cbd5e1;
+      border-radius: 1rem;
+      padding: 1.5rem;
+      color: #94a3b8;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 0.5rem;
+      transition: all 0.2s;
+      cursor: pointer;
+      font-size: 0.875rem;
+      font-weight: 500;
+      background: transparent;
+    }
+    .add-chart-btn:hover {
+      border-color: #60a5fa;
+      color: #3b82f6;
+    }
+
+    .sort-th {
+      cursor: pointer;
+      user-select: none;
+      transition: background-color 0.15s;
+    }
+    .sort-th:hover { background-color: #f1f5f9; }
+
+    .score-badge {
+      font-size: 0.75rem;
+      font-weight: 600;
+      padding: 0.125rem 0.5rem;
+      border-radius: 9999px;
+      border: 1px solid;
+    }
+  </style>
+</head>
+
+<body class="bg-slate-50 min-h-screen" x-data="dashboard()" x-init="init()">
+
+<!-- ═══════════════════════════════════════════════════════════
+     IMPORT SCREEN
+═══════════════════════════════════════════════════════════ -->
+<div x-show="!dataLoaded" x-transition class="min-h-screen flex items-center justify-center p-6">
+  <div class="max-w-lg w-full">
+    <!-- Logo / Brand -->
+    <div class="text-center mb-10">
+      <div class="inline-flex items-center justify-center w-16 h-16 bg-blue-600 rounded-2xl mb-4 shadow-lg">
+        <svg xmlns="http://www.w3.org/2000/svg" class="w-8 h-8 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
+        </svg>
+      </div>
+      <h1 class="text-2xl font-bold text-slate-900">Mostaql Analytics</h1>
+      <p class="text-slate-500 mt-1 text-sm">Freelancer Intelligence Dashboard</p>
+    </div>
+
+    <!-- Drop Zone -->
+    <div
+      class="border-2 border-dashed border-slate-300 rounded-2xl p-12 text-center cursor-pointer hover:border-blue-400 hover:bg-blue-50 transition-all duration-200"
+      :class="{'border-blue-500 bg-blue-50': isDragOver}"
+      @dragover.prevent="isDragOver = true"
+      @dragleave.prevent="isDragOver = false"
+      @drop.prevent="handleDrop($event)"
+      @click="$refs.fileInput.click()"
+    >
+      <div class="flex flex-col items-center gap-3">
+        <div class="w-14 h-14 bg-slate-100 rounded-xl flex items-center justify-center" :class="{'bg-blue-100': isDragOver}">
+          <svg xmlns="http://www.w3.org/2000/svg" class="w-7 h-7 text-slate-400" :class="{'text-blue-500': isDragOver}" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5m-13.5-9L12 3m0 0l4.5 4.5M12 3v13.5" />
+          </svg>
+        </div>
+        <div>
+          <p class="font-semibold text-slate-700">Drop your JSON file here</p>
+          <p class="text-sm text-slate-400 mt-1">or click to browse</p>
+        </div>
+        <span class="text-xs bg-slate-100 text-slate-500 px-3 py-1 rounded-full font-mono">.json</span>
+      </div>
+      <input type="file" accept=".json" x-ref="fileInput" class="hidden" @change="handleFileInput($event)" />
+    </div>
+
+    <!-- Error message -->
+    <div x-show="importError" class="mt-4 alert alert-error text-sm" x-text="importError"></div>
+
+    <!-- Format hint -->
+    <div class="mt-6 bg-white rounded-xl border border-slate-200 p-4">
+      <p class="text-xs font-semibold text-slate-600 mb-2 uppercase tracking-wide">Expected JSON structure</p>
+      <pre class="text-xs text-slate-500 font-mono leading-relaxed overflow-x-auto">[
+  {
+    "rank": 1,
+    "name": "ديفيد ل.",
+    "title": "مهندس حاسوب",
+    "success_score": 86.73,
+    "completion_rate": 100.0,
+    "ontime_delivery_rate": 100.0,
+    "total_completed_projects": 113,
+    "skills": ["بايثون", "VPS"],
+    "avg_response_time_raw": "44 دقيقة",
+    ...
+  }
+]</pre>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════
+     MAIN DASHBOARD
+═══════════════════════════════════════════════════════════ -->
+<div x-show="dataLoaded" x-transition class="max-w-screen-2xl mx-auto px-6 py-6">
+
+  <!-- ── HEADER ── -->
+  <div class="flex items-center justify-between mb-6 flex-wrap gap-4">
+    <div class="flex items-center gap-3">
+      <div class="w-10 h-10 bg-blue-600 rounded-xl flex items-center justify-center shadow">
+        <svg xmlns="http://www.w3.org/2000/svg" class="w-5 h-5 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
+        </svg>
+      </div>
+      <div>
+        <h1 class="text-xl font-bold text-slate-900">Mostaql Analytics</h1>
+        <p class="text-xs text-slate-500">Freelancer Intelligence Dashboard</p>
+      </div>
+    </div>
+    <div class="flex items-center gap-3 flex-wrap">
+      <span class="badge badge-soft badge-primary text-xs font-mono" x-text="`${rawData.length} freelancers loaded`"></span>
+      <span class="badge badge-soft badge-neutral text-xs" x-text="`Last import: ${importTime}`"></span>
+      <button class="btn btn-sm btn-ghost text-slate-500" @click="resetDashboard()">
+        <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
+        New file
+      </button>
+    </div>
+  </div>
+
+  <!-- ── TOP-N SELECTOR + KPI CARDS ── -->
+  <div class="mb-6">
+    <div class="flex items-center gap-3 mb-4 flex-wrap">
+      <span class="text-sm font-semibold text-slate-700">Showing top</span>
+      <div class="flex gap-1">
+        <template x-for="n in topNOptions" :key="n">
+          <button
+            class="btn btn-xs"
+            :class="topN === n ? 'btn-primary' : 'btn-ghost text-slate-500'"
+            @click="setTopN(n)"
+            x-text="n === 9999 ? 'All' : n"
+          ></button>
+        </template>
+      </div>
+      <span class="text-sm text-slate-500">freelancers by success score</span>
+    </div>
+
+    <div class="grid grid-cols-2 lg:grid-cols-4 gap-4">
+      <!-- KPI 1: Top Score -->
+      <div class="kpi-card">
+        <div class="flex items-center justify-between">
+          <div class="kpi-icon-wrap bg-blue-50">🏆</div>
+          <span class="text-xs text-slate-400 font-medium uppercase tracking-wide">Top Score</span>
+        </div>
+        <div>
+          <p class="text-3xl font-bold text-slate-900 font-mono" x-text="kpis.topScore"></p>
+          <p class="text-xs text-slate-500 mt-0.5" x-text="kpis.topScoreName"></p>
+        </div>
+        <div class="w-full bg-slate-100 rounded-full h-1.5 mt-1">
+          <div class="bg-blue-500 h-1.5 rounded-full transition-all duration-500" :style="`width: ${kpis.topScore}%`"></div>
+        </div>
+      </div>
+
+      <!-- KPI 2: Avg Completion -->
+      <div class="kpi-card">
+        <div class="flex items-center justify-between">
+          <div class="kpi-icon-wrap bg-emerald-50">✅</div>
+          <span class="text-xs text-slate-400 font-medium uppercase tracking-wide">Avg Completion</span>
+        </div>
+        <div>
+          <p class="text-3xl font-bold text-slate-900 font-mono" x-text="`${kpis.avgCompletion}%`"></p>
+          <p class="text-xs text-slate-500 mt-0.5" x-text="`of top ${topN === 9999 ? 'all' : topN} freelancers`"></p>
+        </div>
+        <div class="w-full bg-slate-100 rounded-full h-1.5 mt-1">
+          <div class="bg-emerald-500 h-1.5 rounded-full transition-all duration-500" :style="`width: ${kpis.avgCompletion}%`"></div>
+        </div>
+      </div>
+
+      <!-- KPI 3: Avg On-Time -->
+      <div class="kpi-card">
+        <div class="flex items-center justify-between">
+          <div class="kpi-icon-wrap bg-violet-50">⏱️</div>
+          <span class="text-xs text-slate-400 font-medium uppercase tracking-wide">Avg On-Time</span>
+        </div>
+        <div>
+          <p class="text-3xl font-bold text-slate-900 font-mono" x-text="`${kpis.avgOnTime}%`"></p>
+          <p class="text-xs text-slate-500 mt-0.5" x-text="`median response: ${kpis.medianResponse} min`"></p>
+        </div>
+        <div class="w-full bg-slate-100 rounded-full h-1.5 mt-1">
+          <div class="bg-violet-500 h-1.5 rounded-full transition-all duration-500" :style="`width: ${kpis.avgOnTime}%`"></div>
+        </div>
+      </div>
+
+      <!-- KPI 4: Top Skill -->
+      <div class="kpi-card">
+        <div class="flex items-center justify-between">
+          <div class="kpi-icon-wrap bg-amber-50">🔧</div>
+          <span class="text-xs text-slate-400 font-medium uppercase tracking-wide">Top Skill</span>
+        </div>
+        <div>
+          <p class="text-xl font-bold text-slate-900 leading-tight mt-1" x-text="kpis.topSkill"></p>
+          <p class="text-xs text-slate-500 mt-0.5" x-text="`${kpis.topSkillCount} freelancers`"></p>
+        </div>
+        <div class="flex gap-1 flex-wrap mt-1">
+          <template x-for="s in kpis.topSkills3" :key="s">
+            <span class="badge badge-soft badge-primary badge-xs" x-text="s"></span>
+          </template>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── TABS ── -->
+  <div class="flex gap-2 mb-5 flex-wrap bg-white rounded-xl border border-slate-200 p-1.5 w-fit">
+    <button class="tab-btn" :class="activeTab === 'overview' ? 'active' : ''" @click="activeTab = 'overview'">📋 Overview</button>
+    <button class="tab-btn" :class="activeTab === 'performance' ? 'active' : ''" @click="activeTab = 'performance'">📈 Performance</button>
+    <button class="tab-btn" :class="activeTab === 'skills' ? 'active' : ''" @click="activeTab = 'skills'">🔧 Skills</button>
+    <button class="tab-btn" :class="activeTab === 'operational' ? 'active' : ''" @click="activeTab = 'operational'">⚙️ Operational</button>
+    <button class="tab-btn" :class="activeTab === 'explorer' ? 'active' : ''" @click="activeTab = 'explorer'">🔭 Explorer</button>
+  </div>
+
+  <!-- ════════════════════════════════════════
+       TAB: OVERVIEW
+  ════════════════════════════════════════ -->
+  <div x-show="activeTab === 'overview'" x-transition>
+
+    <!-- Search + Filter bar -->
+    <div class="flex gap-3 mb-4 flex-wrap items-center">
+      <div class="relative flex-1 min-w-48">
+        <svg xmlns="http://www.w3.org/2000/svg" class="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
+        <input
+          type="text"
+          placeholder="Fuzzy search name, title, skill…"
+          class="input input-sm w-full pl-9 bg-white border-slate-200"
+          x-model="tableSearch"
+          @input.debounce.200ms="applySearch()"
+        />
+      </div>
+      <select class="select select-sm bg-white border-slate-200" x-model="tableSortCol" @change="sortTable()">
+        <option value="rank">Sort: Rank</option>
+        <option value="success_score">Sort: Success Score</option>
+        <option value="completion_rate">Sort: Completion Rate</option>
+        <option value="ontime_delivery_rate">Sort: On-Time Rate</option>
+        <option value="total_completed_projects">Sort: Total Projects</option>
+        <option value="rehire_rate">Sort: Rehire Rate</option>
+        <option value="avg_response_time_minutes">Sort: Response Time</option>
+      </select>
+      <button class="btn btn-sm btn-ghost" @click="tableSortDir = tableSortDir === 'asc' ? 'desc' : 'asc'; sortTable()">
+        <span x-text="tableSortDir === 'asc' ? '↑ Asc' : '↓ Desc'"></span>
+      </button>
+      <span class="text-xs text-slate-400 font-mono" x-text="`${filteredTable.length} results`"></span>
+      <!-- Page size selector -->
+      <div class="flex items-center gap-1.5 ml-auto">
+        <span class="text-xs text-slate-400">Rows:</span>
+        <select class="select select-xs bg-white border-slate-200" x-model.number="tablePageSize" @change="setPageSize($event.target.value)">
+          <option value="10">10</option>
+          <option value="25" selected>25</option>
+          <option value="50">50</option>
+          <option value="100">100</option>
+        </select>
+      </div>
+    </div>
+
+    <!-- Leaderboard Table -->
+    <div class="chart-card overflow-x-auto">
+      <table class="table table-zebra table-sm w-full text-sm">
+        <thead class="bg-slate-50">
+          <tr>
+            <th class="sort-th" @click="toggleSort('rank')"># <span x-text="tableSortCol === 'rank' ? (tableSortDir === 'asc' ? '↑' : '↓') : ''"></span></th>
+            <th>Freelancer</th>
+            <th>Title</th>
+            <th class="sort-th" @click="toggleSort('success_score')">Score <span x-text="tableSortCol === 'success_score' ? (tableSortDir === 'asc' ? '↑' : '↓') : ''"></span></th>
+            <th class="sort-th" @click="toggleSort('completion_rate')">Completion <span x-text="tableSortCol === 'completion_rate' ? (tableSortDir === 'asc' ? '↑' : '↓') : ''"></span></th>
+            <th class="sort-th" @click="toggleSort('ontime_delivery_rate')">On-Time <span x-text="tableSortCol === 'ontime_delivery_rate' ? (tableSortDir === 'asc' ? '↑' : '↓') : ''"></span></th>
+            <th class="sort-th" @click="toggleSort('rehire_rate')">Rehire <span x-text="tableSortCol === 'rehire_rate' ? (tableSortDir === 'asc' ? '↑' : '↓') : ''"></span></th>
+            <th class="sort-th" @click="toggleSort('total_completed_projects')">Projects <span x-text="tableSortCol === 'total_completed_projects' ? (tableSortDir === 'asc' ? '↑' : '↓') : ''"></span></th>
+            <th class="sort-th" @click="toggleSort('avg_response_time_minutes')">Response <span x-text="tableSortCol === 'avg_response_time_minutes' ? (tableSortDir === 'asc' ? '↑' : '↓') : ''"></span></th>
+            <th>Skills</th>
+            <th>Last Active</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          <template x-for="row in pagedTable()" :key="row.rank">
+            <tr class="hover:bg-slate-50 transition-colors">
+              <td class="font-mono text-slate-400 text-xs" x-text="row.rank"></td>
+              <td>
+                <div class="font-semibold text-slate-800" x-text="row.name"></div>
+              </td>
+              <td class="text-slate-500 text-xs max-w-32 truncate" x-text="row.title"></td>
+              <td>
+                <span class="score-badge" :class="row.success_score >= 85 ? 'tier-top' : row.success_score >= 70 ? 'tier-mid' : 'tier-low'" x-text="row.success_score.toFixed(1)"></span>
+              </td>
+              <td>
+                <div class="flex items-center gap-2">
+                  <div class="w-16 bg-slate-100 rounded-full h-1.5">
+                    <div class="h-1.5 rounded-full" :class="row.completion_rate >= 95 ? 'bg-emerald-500' : row.completion_rate >= 80 ? 'bg-amber-400' : 'bg-red-400'" :style="`width: ${row.completion_rate}%`"></div>
+                  </div>
+                  <span class="font-mono text-xs" x-text="`${row.completion_rate.toFixed(0)}%`"></span>
+                </div>
+              </td>
+              <td>
+                <div class="flex items-center gap-2">
+                  <div class="w-16 bg-slate-100 rounded-full h-1.5">
+                    <div class="h-1.5 rounded-full bg-violet-400" :style="`width: ${row.ontime_delivery_rate}%`"></div>
+                  </div>
+                  <span class="font-mono text-xs" x-text="`${row.ontime_delivery_rate.toFixed(0)}%`"></span>
+                </div>
+              </td>
+              <td class="font-mono text-xs text-slate-600" x-text="`${row.rehire_rate.toFixed(1)}%`"></td>
+              <td class="font-mono text-xs font-semibold text-slate-700" x-text="row.total_completed_projects"></td>
+              <td class="font-mono text-xs text-slate-500" x-text="formatMinutes(row.avg_response_time_minutes)"></td>
+              <td>
+                <div class="flex gap-1 flex-wrap max-w-40">
+                  <template x-for="(skill, i) in row.skills.slice(0,3)" :key="i">
+                    <span class="badge badge-ghost badge-xs text-slate-500" x-text="skill"></span>
+                  </template>
+                  <span x-show="row.skills.length > 3" class="badge badge-ghost badge-xs text-slate-400" x-text="`+${row.skills.length - 3}`"></span>
+                </div>
+              </td>
+              <td class="text-xs text-slate-400" x-text="row.last_active || '—'"></td>
+              <td>
+                <a :href="row.profile_url" target="_blank" class="btn btn-xs btn-ghost text-blue-500">
+                  <svg xmlns="http://www.w3.org/2000/svg" class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"/></svg>
+                </a>
+              </td>
+            </tr>
+          </template>
+          <tr x-show="filteredTable.length === 0">
+            <td colspan="12" class="text-center text-slate-400 py-10">No freelancers match your search.</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <!-- Pagination Bar -->
+      <div x-show="filteredTable.length > 0" class="flex items-center justify-between px-4 py-3 border-t border-slate-100 flex-wrap gap-3">
+        <!-- Info -->
+        <span class="text-xs text-slate-400 font-mono" x-text="(() => {
+          const start = (tablePage - 1) * tablePageSize + 1;
+          const end = Math.min(tablePage * tablePageSize, filteredTable.length);
+          return `Showing ${start}–${end} of ${filteredTable.length}`;
+        })()"></span>
+
+        <!-- Page controls -->
+        <div class="flex items-center gap-1">
+          <!-- Prev -->
+          <button
+            class="btn btn-xs btn-ghost"
+            :disabled="tablePage === 1"
+            @click="goToPage(tablePage - 1)"
+            aria-label="Previous page"
+          >&#8592;</button>
+
+          <!-- Page numbers -->
+          <template x-for="(p, i) in pageNumbers()" :key="i">
+            <button
+              class="btn btn-xs"
+              :class="p === tablePage ? 'btn-primary' : p === '…' ? 'btn-ghost pointer-events-none text-slate-300' : 'btn-ghost text-slate-600'"
+              @click="goToPage(p)"
+              x-text="p"
+            ></button>
+          </template>
+
+          <!-- Next -->
+          <button
+            class="btn btn-xs btn-ghost"
+            :disabled="tablePage === totalPages()"
+            @click="goToPage(tablePage + 1)"
+            aria-label="Next page"
+          >&#8594;</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ════════════════════════════════════════
+       TAB: PERFORMANCE
+  ════════════════════════════════════════ -->
+  <div x-show="activeTab === 'performance'" x-transition>
+    <div class="grid grid-cols-1 xl:grid-cols-2 gap-5">
+
+      <!-- Chart 1: Success Score Ranking -->
+      <div class="chart-card">
+        <div class="px-5 pt-5 pb-2">
+          <h3 class="font-semibold text-slate-800">Success Score Ranking</h3>
+          <p class="chart-description">Composite success scores computed by the platform per freelancer. Higher is better — scores above 85 indicate top-tier talent.</p>
+        </div>
+        <div id="chart-score-ranking"></div>
+        <div class="insight-list" id="insights-score-ranking"></div>
+      </div>
+
+      <!-- Chart 2: Completion vs On-Time (Grouped Bar) -->
+      <div class="chart-card">
+        <div class="px-5 pt-5 pb-2">
+          <h3 class="font-semibold text-slate-800">Completion vs. On-Time Delivery</h3>
+          <p class="chart-description">Side-by-side comparison of project completion rate and on-time delivery rate. A high completion but low on-time rate signals quality-focused but deadline-challenged freelancers.</p>
+        </div>
+        <div id="chart-completion-ontime"></div>
+        <div class="insight-list" id="insights-completion-ontime"></div>
+      </div>
+
+      <!-- Chart 3: Bubble — On-Time vs Completion, sized by projects -->
+      <div class="chart-card">
+        <div class="px-5 pt-5 pb-2">
+          <h3 class="font-semibold text-slate-800">On-Time vs Completion Matrix</h3>
+          <p class="chart-description">Scatter plot where bubble size encodes total completed projects. Top-right corner = elite performers. Large bubbles in top-right = high-volume elite freelancers.</p>
+        </div>
+        <div id="chart-bubble"></div>
+        <div class="insight-list" id="insights-bubble"></div>
+      </div>
+
+      <!-- Chart 4: Radar -->
+      <div class="chart-card">
+        <div class="px-5 pt-5 pb-2">
+          <h3 class="font-semibold text-slate-800">Multi-Metric Radar</h3>
+          <p class="chart-description">Radar chart comparing each freelancer across six normalized dimensions. A balanced, large polygon indicates a well-rounded freelancer with no weak spots.</p>
+        </div>
+        <div id="chart-radar"></div>
+        <div class="insight-list" id="insights-radar"></div>
+      </div>
+
+      <!-- Chart 5: Rehire vs Communication -->
+      <div class="chart-card">
+        <div class="px-5 pt-5 pb-2">
+          <h3 class="font-semibold text-slate-800">Rehire Rate vs. Communication Success</h3>
+          <p class="chart-description">Scatter plot examining the relationship between how often clients rehire a freelancer and how effective their communication is. Strong correlation suggests communication drives loyalty.</p>
+        </div>
+        <div id="chart-rehire-comm"></div>
+        <div class="insight-list" id="insights-rehire-comm"></div>
+      </div>
+
+      <!-- Chart 6: Score Tier Distribution -->
+      <div class="chart-card">
+        <div class="px-5 pt-5 pb-2">
+          <h3 class="font-semibold text-slate-800">Score Tier Distribution</h3>
+          <p class="chart-description">Donut chart breaking down the freelancer pool by performance tier: Top (≥85), Mid (70–84), and Developing (&lt;70). Use to assess overall platform quality.</p>
+        </div>
+        <div id="chart-tier-donut"></div>
+        <div class="insight-list" id="insights-tier-donut"></div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- ════════════════════════════════════════
+       TAB: SKILLS
+  ════════════════════════════════════════ -->
+  <div x-show="activeTab === 'skills'" x-transition>
+    <div class="grid grid-cols-1 xl:grid-cols-2 gap-5">
+
+      <!-- Chart 7: Top Skills Frequency -->
+      <div class="chart-card">
+        <div class="px-5 pt-5 pb-2">
+          <h3 class="font-semibold text-slate-800">Top Skills by Frequency</h3>
+          <p class="chart-description">How many freelancers possess each skill. Skills at the top are platform-wide capabilities — widespread but potentially commoditized. Rare skills in the middle may indicate niche specialists.</p>
+        </div>
+        <div id="chart-skills-freq"></div>
+        <div class="insight-list" id="insights-skills-freq"></div>
+      </div>
+
+      <!-- Chart 8: Avg Completion per Skill -->
+      <div class="chart-card">
+        <div class="px-5 pt-5 pb-2">
+          <h3 class="font-semibold text-slate-800">Avg Completion Rate by Skill</h3>
+          <p class="chart-description">Average project completion rate across freelancers who possess each skill. Skills with 100% completion averages are associated with the most reliable performers.</p>
+        </div>
+        <div id="chart-skill-completion"></div>
+        <div class="insight-list" id="insights-skill-completion"></div>
+      </div>
+
+      <!-- Chart 9: Skills Count vs Success Score -->
+      <div class="chart-card">
+        <div class="px-5 pt-5 pb-2">
+          <h3 class="font-semibold text-slate-800">Skills Count vs. Success Score</h3>
+          <p class="chart-description">Does having more skills correlate with higher success? Each point is one freelancer. A positive trend suggests breadth of skills is rewarded on the platform.</p>
+        </div>
+        <div id="chart-skills-score"></div>
+        <div class="insight-list" id="insights-skills-score"></div>
+      </div>
+
+      <!-- Chart 10: Skills Heatmap per Freelancer -->
+      <div class="chart-card">
+        <div class="px-5 pt-5 pb-2">
+          <h3 class="font-semibold text-slate-800">Skill Domains by Freelancer</h3>
+          <p class="chart-description">Treemap showing the total unique skill count per freelancer, sized proportionally. Larger blocks mean more diverse skill sets.</p>
+        </div>
+        <div id="chart-skills-treemap"></div>
+        <div class="insight-list" id="insights-skills-treemap"></div>
+      </div>
+
+      <!-- Chart 11: Avg Score per Skill -->
+      <div class="chart-card xl:col-span-2">
+        <div class="px-5 pt-5 pb-2">
+          <h3 class="font-semibold text-slate-800">Avg Success Score by Skill</h3>
+          <p class="chart-description">For each skill, what is the average success score of freelancers who have it? Highlights which skills are associated with the highest-quality performers on the platform.</p>
+        </div>
+        <div id="chart-skill-score-avg"></div>
+        <div class="insight-list" id="insights-skill-score-avg"></div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- ════════════════════════════════════════
+       TAB: OPERATIONAL
+  ════════════════════════════════════════ -->
+  <div x-show="activeTab === 'operational'" x-transition>
+    <div class="grid grid-cols-1 xl:grid-cols-2 gap-5">
+
+      <!-- Chart 12: Response Time Distribution -->
+      <div class="chart-card">
+        <div class="px-5 pt-5 pb-2">
+          <h3 class="font-semibold text-slate-800">Response Time Distribution</h3>
+          <p class="chart-description">How quickly do freelancers typically respond? Distribution of average response times in minutes. Lower is better — fast responders tend to win more projects.</p>
+        </div>
+        <div id="chart-response-dist"></div>
+        <div class="insight-list" id="insights-response-dist"></div>
+      </div>
+
+      <!-- Chart 13: Rehire Rate Distribution -->
+      <div class="chart-card">
+        <div class="px-5 pt-5 pb-2">
+          <h3 class="font-semibold text-slate-800">Rehire Rate per Freelancer</h3>
+          <p class="chart-description">Percentage of clients who came back to hire the same freelancer again. High rehire rates signal strong client satisfaction and long-term relationship potential.</p>
+        </div>
+        <div id="chart-rehire-dist"></div>
+        <div class="insight-list" id="insights-rehire-dist"></div>
+      </div>
+
+      <!-- Chart 14: Portfolio vs Projects Done -->
+      <div class="chart-card">
+        <div class="px-5 pt-5 pb-2">
+          <h3 class="font-semibold text-slate-800">Portfolio Count vs. Projects Completed</h3>
+          <p class="chart-description">Do freelancers with larger portfolios complete more projects? Each point is one freelancer. Outliers may have many projects but few showcase items, or vice versa.</p>
+        </div>
+        <div id="chart-portfolio-projects"></div>
+        <div class="insight-list" id="insights-portfolio-projects"></div>
+      </div>
+
+      <!-- Chart 15: Registration Timeline -->
+      <div class="chart-card">
+        <div class="px-5 pt-5 pb-2">
+          <h3 class="font-semibold text-slate-800">Platform Registration Timeline</h3>
+          <p class="chart-description">When did top freelancers join the platform? Older registrations may indicate established reputation. Newer ones may reflect rising talent.</p>
+        </div>
+        <div id="chart-registration"></div>
+        <div class="insight-list" id="insights-registration"></div>
+      </div>
+
+      <!-- Chart 16: Communication Success Distribution -->
+      <div class="chart-card">
+        <div class="px-5 pt-5 pb-2">
+          <h3 class="font-semibold text-slate-800">Communication Success Rate</h3>
+          <p class="chart-description">How often do freelancers successfully communicate with potential clients? Higher rates suggest proactive engagement. Low rates may indicate missed opportunities.</p>
+        </div>
+        <div id="chart-comm-dist"></div>
+        <div class="insight-list" id="insights-comm-dist"></div>
+      </div>
+
+      <!-- Chart 17: Score vs Response Time -->
+      <div class="chart-card">
+        <div class="px-5 pt-5 pb-2">
+          <h3 class="font-semibold text-slate-800">Success Score vs. Response Time</h3>
+          <p class="chart-description">Does faster response time correlate with higher success scores? A negative correlation would confirm that responsiveness is a key success driver.</p>
+        </div>
+        <div id="chart-score-response"></div>
+        <div class="insight-list" id="insights-score-response"></div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- ════════════════════════════════════════
+       TAB: EXPLORER
+  ════════════════════════════════════════ -->
+  <div x-show="activeTab === 'explorer'" x-transition>
+    <div class="mb-4">
+      <h2 class="font-semibold text-slate-800">Custom Chart Explorer</h2>
+      <p class="text-sm text-slate-500 mt-1">Build any chart you need. Choose axes, chart type, and optional bubble size dimension.</p>
+    </div>
+
+    <!-- Custom charts grid -->
+    <div class="grid grid-cols-1 xl:grid-cols-2 gap-5" id="custom-charts-grid">
+      <template x-for="(cc, idx) in customCharts" :key="cc.id">
+        <div class="chart-card">
+          <div class="px-5 pt-4 pb-2 flex items-center justify-between">
+            <h3 class="font-semibold text-slate-800 text-sm" x-text="cc.title"></h3>
+            <button class="btn btn-xs btn-ghost text-slate-400 hover:text-red-500" @click="removeCustomChart(idx)">✕</button>
+          </div>
+          <!-- Controls -->
+          <div class="px-5 pb-3 flex flex-wrap gap-2">
+            <select class="select select-xs bg-white border-slate-200" x-model="cc.type" @change="renderCustomChart(cc)">
+              <option value="bar">Bar</option>
+              <option value="line">Line</option>
+              <option value="scatter">Scatter</option>
+              <option value="radar">Radar</option>
+              <option value="donut">Donut</option>
+              <option value="area">Area</option>
+            </select>
+            <select class="select select-xs bg-white border-slate-200" x-model="cc.xCol" @change="renderCustomChart(cc)">
+              <option value="">X Axis…</option>
+              <template x-for="col in numericCols" :key="col.key">
+                <option :value="col.key" x-text="col.label"></option>
+              </template>
+              <option value="name">Name</option>
+              <option value="title">Title</option>
+            </select>
+            <select class="select select-xs bg-white border-slate-200" x-model="cc.yCol" @change="renderCustomChart(cc)">
+              <option value="">Y Axis…</option>
+              <template x-for="col in numericCols" :key="col.key">
+                <option :value="col.key" x-text="col.label"></option>
+              </template>
+            </select>
+            <select class="select select-xs bg-white border-slate-200" x-show="cc.type === 'scatter'" x-model="cc.sizeCol" @change="renderCustomChart(cc)">
+              <option value="">Bubble size…</option>
+              <template x-for="col in numericCols" :key="col.key">
+                <option :value="col.key" x-text="col.label"></option>
+              </template>
+            </select>
+          </div>
+          <div :id="`custom-chart-${cc.id}`" class="min-h-48"></div>
+        </div>
+      </template>
+    </div>
+
+    <!-- Add Chart Button -->
+    <div class="mt-5">
+      <button class="add-chart-btn" @click="addCustomChart()">
+        <svg xmlns="http://www.w3.org/2000/svg" class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4"/></svg>
+        Add Chart
+      </button>
+    </div>
+  </div>
+
+</div><!-- end main dashboard -->
+
+<!-- ═══════════════════════════════════════════════════════════
+     ALPINE.JS COMPONENT
+═══════════════════════════════════════════════════════════ -->
+<script>
+function dashboard() {
+  return {
+    // ── State ──────────────────────────────────────
+    dataLoaded: false,
+    isDragOver: false,
+    importError: '',
+    importTime: '',
+    rawData: [],
+    processedData: [],
+    filteredTable: [],
+    activeTab: 'overview',
+
+    // Top-N
+    topNOptions: [5, 10, 20, 50, 9999],
+    topN: 9999,
+
+    // Table
+    tableSearch: '',
+    tableSortCol: 'rank',
+    tableSortDir: 'asc',
+    fuseInstance: null,
+
+    // Pagination
+    tablePage: 1,
+    tablePageSize: 25,
+
+    // KPIs
+    kpis: { topScore: 0, topScoreName: '', avgCompletion: 0, avgOnTime: 0, medianResponse: 0, topSkill: '', topSkillCount: 0, topSkills3: [] },
+
+    // Charts registry (keyed by id)
+    chartInstances: {},
+
+    // Custom charts
+    customCharts: [],
+    customChartCounter: 0,
+
+    // Column definitions
+    numericCols: [
+      { key: 'success_score', label: 'Success Score' },
+      { key: 'completion_rate', label: 'Completion Rate (%)' },
+      { key: 'ontime_delivery_rate', label: 'On-Time Rate (%)' },
+      { key: 'rehire_rate', label: 'Rehire Rate (%)' },
+      { key: 'communication_success_rate', label: 'Communication (%)' },
+      { key: 'total_completed_projects', label: 'Total Projects' },
+      { key: 'portfolio_count', label: 'Portfolio Count' },
+      { key: 'avg_response_time_minutes', label: 'Response Time (min)' },
+      { key: 'skills_count', label: 'Skills Count' },
+    ],
+
+    // ── Lifecycle ──────────────────────────────────
+    init() { /* waiting for file */ },
+
+    // ── File Handling ─────────────────────────────
+    handleDrop(e) {
+      this.isDragOver = false;
+      const file = e.dataTransfer.files[0];
+      if (file) this.readFile(file);
+    },
+    handleFileInput(e) {
+      const file = e.target.files[0];
+      if (file) this.readFile(file);
+    },
+    readFile(file) {
+      if (!file.name.endsWith('.json')) {
+        this.importError = 'Please upload a valid .json file.';
+        return;
+      }
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        try {
+          const raw = JSON.parse(e.target.result);
+          const arr = Array.isArray(raw) ? raw : [raw];
+          if (arr.length === 0) throw new Error('Empty array');
+          this.rawData = arr;
+          this.processedData = arr.map(r => this.normalizeRecord(r));
+          this.importTime = new Date().toLocaleTimeString();
+          this.dataLoaded = true;
+          this.importError = '';
+          this.$nextTick(() => {
+            this.buildFuse();
+            this.applyTopN();
+            this.renderAllCharts();
+          });
+        } catch(err) {
+          this.importError = `Invalid JSON: ${err.message}`;
+        }
+      };
+      reader.readAsText(file);
+    },
+    resetDashboard() {
+      // destroy charts
+      Object.values(this.chartInstances).forEach(c => { try { c.destroy(); } catch(e){} });
+      this.chartInstances = {};
+      this.customCharts = [];
+      this.dataLoaded = false;
+      this.rawData = [];
+      this.processedData = [];
+      this.filteredTable = [];
+      this.tableSearch = '';
+      this.importError = '';
+    },
+
+    // ── Arabic Normalization ──────────────────────
+    normalizeArabicText(text) {
+      if (!text || typeof text !== 'string') return text;
+      // Remove diacritics (tashkeel)
+      let t = text.replace(/[\u064B-\u065F\u0670]/g, '');
+      // Normalize Alef variants → ا
+      t = t.replace(/[أإآٱ]/g, 'ا');
+      // Normalize Taa marbuta → ه
+      t = t.replace(/ة/g, 'ه');
+      // Normalize Yaa variants
+      t = t.replace(/ى/g, 'ي');
+      // Convert Arabic-Indic digits to Western
+      t = t.replace(/[٠١٢٣٤٥٦٧٨٩]/g, d => d.charCodeAt(0) - 0x0660);
+      return t.trim();
+    },
+
+    parseArabicTime(raw) {
+      if (!raw || typeof raw !== 'string') return 0;
+      // Convert Arabic-Indic digits
+      let s = raw.replace(/[٠١٢٣٤٥٦٧٨٩]/g, d => d.charCodeAt(0) - 0x0660);
+      let minutes = 0;
+      // Hours: ساعة / ساعتين / N ساعات
+      const hourMatch = s.match(/(\d+)\s*ساع/);
+      const twoHours = s.match(/ساعتين/);
+      const oneHour = s.match(/ساعة\s/) && !s.match(/\d+\s*ساع/);
+      if (twoHours) minutes += 120;
+      else if (oneHour) minutes += 60;
+      else if (hourMatch) minutes += parseInt(hourMatch[1]) * 60;
+      // Minutes: دقيقة / دقيقتين / N دقيقة
+      const minMatch = s.match(/(\d+)\s*دقيق/);
+      const twoMin = s.match(/دقيقتين/);
+      const oneMin = s.match(/دقيقة/) && !s.match(/\d+\s*دقيق/);
+      if (twoMin) minutes += 2;
+      else if (oneMin) minutes += 1;
+      else if (minMatch) minutes += parseInt(minMatch[1]);
+      // Days
+      const dayMatch = s.match(/(\d+)\s*يوم/);
+      const twoDay = s.match(/يومين/);
+      const oneDay = s.match(/يوم\s/) && !s.match(/\d+\s*يوم/);
+      if (twoDay) minutes += 2880;
+      else if (oneDay) minutes += 1440;
+      else if (dayMatch) minutes += parseInt(dayMatch[1]) * 1440;
+      return minutes || parseFloat(s) || 0;
+    },
+
+    normalizeRecord(r) {
+      const rec = { ...r };
+      // Handle potentially null/missing text fields
+      rec.name = String(rec.name || 'Unknown');
+      rec.title = String(rec.title || 'Unknown');
+      
+      // Ensure numeric fields
+      const numFields = ['success_score','completion_rate','ontime_delivery_rate','rehire_rate','communication_success_rate','total_completed_projects','portfolio_count','skills_count','rank'];
+      numFields.forEach(f => { rec[f] = parseFloat(rec[f]) || 0; });
+      // Response time
+      if (typeof rec.avg_response_time_raw === 'string') {
+        rec.avg_response_time_minutes = this.parseArabicTime(rec.avg_response_time_raw);
+      } else {
+        rec.avg_response_time_minutes = parseFloat(rec.avg_response_time_minutes) || 0;
+      }
+      // Skills — ensure array
+      if (typeof rec.skills === 'string') {
+        rec.skills = rec.skills.split(',').map(s => s.trim()).filter(Boolean);
+      }
+      if (!Array.isArray(rec.skills)) rec.skills = [];
+      rec.skills_count = rec.skills.length;
+      // Normalized name for search
+      rec._nameNorm = this.normalizeArabicText(rec.name || '');
+      rec._titleNorm = this.normalizeArabicText(rec.title || '');
+      rec._skillsNorm = (rec.skills || []).map(s => this.normalizeArabicText(s)).join(' ');
+      // Score tier
+      rec._tier = rec.success_score >= 85 ? 'Top' : rec.success_score >= 70 ? 'Mid' : 'Developing';
+      // Registration year
+      if (rec.registration_date) {
+        const d = new Date(rec.registration_date);
+        rec._regYear = isNaN(d) ? null : d.getFullYear();
+        rec._regLabel = isNaN(d) ? rec.registration_date : d.toLocaleDateString('en', { month: 'short', year: 'numeric' });
+      }
+      return rec;
+    },
+
+    // ── Fuse.js Setup ────────────────────────────
+    buildFuse() {
+      this.fuseInstance = new Fuse(this.processedData, {
+        keys: [
+          { name: '_nameNorm', weight: 0.5 },
+          { name: '_titleNorm', weight: 0.3 },
+          { name: '_skillsNorm', weight: 0.2 },
+          { name: 'name', weight: 0.4 },
+          { name: 'title', weight: 0.3 },
+        ],
+        threshold: 0.4,
+        includeScore: true,
+        useExtendedSearch: false,
+      });
+    },
+
+    // ── Top-N & Filtering ────────────────────────
+    setTopN(n) {
+      this.topN = n;
+      this.applyTopN();
+      this.$nextTick(() => this.renderAllCharts());
+    },
+
+    topNData() {
+      const sorted = _.orderBy(this.processedData, ['success_score'], ['desc']);
+      return this.topN === 9999 ? sorted : sorted.slice(0, this.topN);
+    },
+
+    applyTopN() {
+      this.computeKPIs();
+      this.applySearch();
+    },
+
+    applySearch() {
+      this.tablePage = 1;
+      const pool = this.topNData();
+      if (!this.tableSearch.trim()) {
+        this.filteredTable = _.orderBy(pool, [this.tableSortCol], [this.tableSortDir]);
+        return;
+      }
+      const normQuery = this.normalizeArabicText(this.tableSearch.trim());
+      // Use Fuse on the full processed data, then filter to topN
+      const topNIds = new Set(pool.map(r => r.rank));
+      const results = this.fuseInstance.search(normQuery)
+        .filter(r => topNIds.has(r.item.rank))
+        .map(r => r.item);
+      this.filteredTable = _.orderBy(results, [this.tableSortCol], [this.tableSortDir]);
+    },
+
+    toggleSort(col) {
+      if (this.tableSortCol === col) {
+        this.tableSortDir = this.tableSortDir === 'asc' ? 'desc' : 'asc';
+      } else {
+        this.tableSortCol = col;
+        this.tableSortDir = 'desc';
+      }
+      this.sortTable();
+    },
+
+    sortTable() {
+      this.tablePage = 1;
+      this.filteredTable = _.orderBy(this.filteredTable, [this.tableSortCol], [this.tableSortDir]);
+    },
+
+    // ── Pagination ───────────────────────────────
+    pagedTable() {
+      const start = (this.tablePage - 1) * this.tablePageSize;
+      return this.filteredTable.slice(start, start + this.tablePageSize);
+    },
+
+    totalPages() {
+      return Math.max(1, Math.ceil(this.filteredTable.length / this.tablePageSize));
+    },
+
+    pageNumbers() {
+      const total = this.totalPages();
+      const cur = this.tablePage;
+      if (total <= 7) return Array.from({ length: total }, (_, i) => i + 1);
+      const pages = [1];
+      const left = Math.max(2, cur - 2);
+      const right = Math.min(total - 1, cur + 2);
+      if (left > 2) pages.push('…');
+      for (let i = left; i <= right; i++) pages.push(i);
+      if (right < total - 1) pages.push('…');
+      pages.push(total);
+      return pages;
+    },
+
+    goToPage(n) {
+      if (typeof n !== 'number') return;
+      this.tablePage = Math.max(1, Math.min(n, this.totalPages()));
+    },
+
+    setPageSize(size) {
+      this.tablePageSize = parseInt(size);
+      this.tablePage = 1;
+    },
+
+    // ── KPI Computation ──────────────────────────
+    computeKPIs() {
+      const data = this.topNData();
+      if (!data.length) return;
+      const top = _.maxBy(data, 'success_score');
+      this.kpis.topScore = _.round(top.success_score, 2);
+      this.kpis.topScoreName = top.name || '—';
+      this.kpis.avgCompletion = _.round(_.meanBy(data, 'completion_rate'), 1);
+      this.kpis.avgOnTime = _.round(_.meanBy(data, 'ontime_delivery_rate'), 1);
+      const responseTimes = _.map(data, 'avg_response_time_minutes').sort((a,b) => a-b);
+      this.kpis.medianResponse = responseTimes[Math.floor(responseTimes.length / 2)] || 0;
+
+      // Skill frequency
+      const skillFreq = {};
+      data.forEach(r => (r.skills || []).forEach(s => { skillFreq[s] = (skillFreq[s] || 0) + 1; }));
+      const sorted = _.orderBy(Object.entries(skillFreq), [1], ['desc']);
+      this.kpis.topSkill = sorted[0]?.[0] || '—';
+      this.kpis.topSkillCount = sorted[0]?.[1] || 0;
+      this.kpis.topSkills3 = sorted.slice(0, 3).map(e => e[0]);
+    },
+
+    // ── Helpers ──────────────────────────────────
+    getHistogramBins(data, key, binSize = 10, max = 100) {
+      const numBins = Math.ceil(max / binSize);
+      const bins = Array.from({ length: numBins }, () => 0);
+      data.forEach(r => {
+        const val = r[key] || 0;
+        let idx = Math.floor(val / binSize);
+        if (idx >= numBins) idx = numBins - 1;
+        if (idx >= 0) bins[idx]++;
+      });
+      return bins;
+    },
+    
+    getHistogramLabels(binSize = 10, max = 100) {
+      const numBins = Math.ceil(max / binSize);
+      return Array.from({ length: numBins }, (_, i) => `${i * binSize}-${(i + 1) * binSize}`);
+    },
+
+    formatMinutes(m) {
+      if (!m) return '—';
+      if (m < 60) return `${m}m`;
+      const h = Math.floor(m / 60), min = m % 60;
+      return min ? `${h}h ${min}m` : `${h}h`;
+    },
+
+    insertInsights(containerId, insights) {
+      const el = document.getElementById(containerId);
+      if (!el) return;
+      el.innerHTML = insights.map(t =>
+        `<div class="insight-item"><div class="insight-dot"></div><span>${t}</span></div>`
+      ).join('');
+    },
+
+    apexDefaults(extra = {}) {
+      return _.merge({
+        chart: { fontFamily: 'Inter, sans-serif', toolbar: { show: true }, animations: { enabled: true, speed: 400 } },
+        colors: ['#2563eb','#10b981','#f59e0b','#8b5cf6','#ef4444','#06b6d4'],
+        grid: { borderColor: '#f1f5f9', strokeDashArray: 4 },
+        tooltip: { theme: 'light' },
+        dataLabels: { enabled: false },
+      }, extra);
+    },
+
+    destroyChart(id) {
+      if (this.chartInstances[id]) {
+        try { this.chartInstances[id].destroy(); } catch(e) {}
+        delete this.chartInstances[id];
+      }
+    },
+
+    renderChart(id, options) {
+      this.destroyChart(id);
+      const el = document.getElementById(id);
+      if (!el) return;
+      const chart = new ApexCharts(el, options);
+      chart.render();
+      this.chartInstances[id] = chart;
+    },
+
+    // ── Master Render ─────────────────────────────
+    renderAllCharts() {
+      this.computeKPIs();
+      this.applySearch();
+      const data = this.topNData();
+      if (!data.length) return;
+      this.$nextTick(() => {
+        this.renderScoreRanking(data);
+        this.renderCompletionOntime(data);
+        this.renderBubble(data);
+        this.renderRadar(data);
+        this.renderRehireComm(data);
+        this.renderTierDonut(data);
+        this.renderSkillsFreq(data);
+        this.renderSkillCompletion(data);
+        this.renderSkillsScore(data);
+        this.renderSkillsTreemap(data);
+        this.renderSkillScoreAvg(data);
+        this.renderResponseDist(data);
+        this.renderRehireDist(data);
+        this.renderPortfolioProjects(data);
+        this.renderRegistration(data);
+        this.renderCommDist(data);
+        this.renderScoreResponse(data);
+      });
+    },
+
+    // ═══════════════════════════════════════
+    // PERFORMANCE CHARTS
+    // ═══════════════════════════════════════
+
+    renderScoreRanking(data) {
+      const scores = data.map(r => r.success_score || 0);
+      const max = _.max(scores) || 0;
+      const min = _.min(scores) || 0;
+      const avg = _.round(_.mean(scores) || 0, 2);
+      
+      const binSize = 5;
+      const bins = this.getHistogramBins(data, 'success_score', binSize, 100);
+      const labels = this.getHistogramLabels(binSize, 100);
+      
+      this.renderChart('chart-score-ranking', this.apexDefaults({
+        chart: { type: 'bar', height: 300 },
+        plotOptions: { bar: { horizontal: false, columnWidth: '90%', borderRadius: 2 } },
+        dataLabels: { enabled: false },
+        series: [{ name: 'Freelancers', data: bins }],
+        xaxis: { categories: labels, title: { text: 'Success Score Range' } },
+        yaxis: { title: { text: 'Count of Freelancers' } },
+        colors: ['#3b82f6'],
+      }));
+      this.insertInsights('insights-score-ranking', [
+        `Distribution of scores across ${data.length} freelancers (bins of ${binSize})`,
+        `Highest score: ${max} · Lowest: ${min} · Platform Avg: ${avg}`,
+        `${data.filter(r=>r.success_score>=85).length} freelancer(s) are in the Top tier (≥85)`,
+      ]);
+    },
+
+    renderCompletionOntime(data) {
+      const binSize = 10;
+      const completionBins = this.getHistogramBins(data, 'completion_rate', binSize, 100);
+      const ontimeBins = this.getHistogramBins(data, 'ontime_delivery_rate', binSize, 100);
+      const labels = this.getHistogramLabels(binSize, 100);
+      
+      this.renderChart('chart-completion-ontime', this.apexDefaults({
+        chart: { type: 'area', height: 300 },
+        stroke: { curve: 'smooth', width: 2 },
+        fill: { type: 'solid', opacity: 0.3 },
+        dataLabels: { enabled: false },
+        series: [
+          { name: 'Completion Rate Distribution', data: completionBins },
+          { name: 'On-Time Rate Distribution', data: ontimeBins },
+        ],
+        xaxis: { categories: labels, title: { text: 'Rate (%) Range' } },
+        yaxis: { title: { text: 'Count of Freelancers' } },
+        colors: ['#3b82f6', '#10b981'],
+        legend: { position: 'top' }
+      }));
+      
+      this.insertInsights('insights-completion-ontime', [
+        `Compares the distribution volume of completion rates vs on-time rates`,
+        `Avg completion: ${_.round(_.meanBy(data,'completion_rate')||0,1)}% · Avg on-time: ${_.round(_.meanBy(data,'ontime_delivery_rate')||0,1)}%`,
+        `Most freelancers cluster near 100%, but on-time delivery typically trails completion`
+      ]);
+    },
+
+    renderBubble(data) {
+      const series = data.map(r => ({
+        name: r.name,
+        data: [{ x: _.round(r.completion_rate,1), y: _.round(r.ontime_delivery_rate,1), z: Math.max(r.total_completed_projects, 5) }]
+      }));
+      this.renderChart('chart-bubble', this.apexDefaults({
+        chart: { type: 'bubble', height: 320 },
+        series,
+        xaxis: { title: { text: 'Completion Rate (%)' }, min: 0, max: 100 },
+        yaxis: { title: { text: 'On-Time Rate (%)' }, min: 0, max: 100 },
+        legend: { show: true, position: 'bottom', fontSize: '10px' },
+        plotOptions: { bubble: { minBubbleRadius: 10, maxBubbleRadius: 45 } },
+      }));
+      const elite = data.filter(r => r.completion_rate >= 95 && r.ontime_delivery_rate >= 95);
+      this.insertInsights('insights-bubble', [
+        `${elite.length} freelancer(s) in the elite quadrant (95%+ on both axes)`,
+        `Bubble size = total completed projects — larger means more experienced`,
+        `Outliers bottom-right: completing projects but delivering late`,
+      ]);
+    },
+
+    renderRadar(data) {
+      const metrics = ['success_score','completion_rate','ontime_delivery_rate','rehire_rate','communication_success_rate','portfolio_count'];
+      const labels = ['Success','Completion','On-Time','Rehire','Communication','Portfolio'];
+      // Normalize each metric 0–100
+      const maxes = metrics.map(m => _.max(data.map(r => r[m])) || 1);
+      const series = data.map(r => ({
+        name: r.name,
+        data: metrics.map((m, i) => _.round((r[m] / maxes[i]) * 100, 1))
+      }));
+      this.renderChart('chart-radar', this.apexDefaults({
+        chart: { type: 'radar', height: 340 },
+        series,
+        xaxis: { categories: labels },
+        yaxis: { show: false },
+        legend: { show: true, position: 'bottom', fontSize: '10px' },
+        stroke: { width: 2 },
+        fill: { opacity: 0.15 },
+        markers: { size: 4 },
+      }));
+      this.insertInsights('insights-radar', [
+        'Values normalized 0–100 relative to the top performer in each category',
+        `Most balanced profile: ${_.orderBy(data, r => _.std ? 0 : _.round(Math.min(...metrics.map(m=>r[m]/1)),1), ['desc'])[0]?.name || data[0]?.name}`,
+        'Large polygon area = well-rounded performer across all dimensions',
+      ]);
+    },
+
+    renderRehireComm(data) {
+      const series = data.map(r => ({
+        name: r.name,
+        data: [{ x: _.round(r.communication_success_rate,1), y: _.round(r.rehire_rate,1) }]
+      }));
+      this.renderChart('chart-rehire-comm', this.apexDefaults({
+        chart: { type: 'scatter', height: 300 },
+        series,
+        xaxis: { title: { text: 'Communication Success (%)' }, min: 0, max: 100 },
+        yaxis: { title: { text: 'Rehire Rate (%)' }, min: 0, max: 100 },
+        legend: { show: true, position: 'bottom', fontSize: '10px' },
+        markers: { size: 8 },
+      }));
+      const corrCoef = this.pearsonCorr(data.map(r=>r.communication_success_rate), data.map(r=>r.rehire_rate));
+      this.insertInsights('insights-rehire-comm', [
+        `Pearson correlation: ${_.round(corrCoef,3)} — ${Math.abs(corrCoef) > 0.5 ? 'strong' : Math.abs(corrCoef) > 0.3 ? 'moderate' : 'weak'} ${corrCoef > 0 ? 'positive' : 'negative'} relationship`,
+        `Avg rehire rate: ${_.round(_.meanBy(data,'rehire_rate'),1)}%`,
+        `Top communicator: ${_.maxBy(data,'communication_success_rate')?.name} (${_.round(_.maxBy(data,'communication_success_rate')?.communication_success_rate,1)}%)`,
+      ]);
+    },
+
+    renderTierDonut(data) {
+      const tiers = _.countBy(data, '_tier');
+      const labels = Object.keys(tiers);
+      const values = Object.values(tiers);
+      this.renderChart('chart-tier-donut', this.apexDefaults({
+        chart: { type: 'donut', height: 300 },
+        series: values,
+        labels,
+        colors: labels.map(l => l === 'Top' ? '#10b981' : l === 'Mid' ? '#f59e0b' : '#ef4444'),
+        legend: { position: 'bottom' },
+        plotOptions: { pie: { donut: { size: '65%', labels: { show: true, total: { show: true, label: 'Total', formatter: () => data.length } } } } },
+      }));
+      this.insertInsights('insights-tier-donut', [
+        `Top tier (≥85): ${tiers['Top']||0} · Mid (70–84): ${tiers['Mid']||0} · Developing (<70): ${tiers['Developing']||0}`,
+        `${_.round(((tiers['Top']||0)/data.length)*100,1)}% of freelancers are in the elite Top tier`,
+        'Score tiers help quickly identify which freelancers to prioritize for high-stakes projects',
+      ]);
+    },
+
+    // ═══════════════════════════════════════
+    // SKILLS CHARTS
+    // ═══════════════════════════════════════
+
+    getSkillMap(data) {
+      const map = {};
+      data.forEach(r => {
+        (r.skills || []).forEach(s => {
+          if (!map[s]) map[s] = { count: 0, completions: [], scores: [] };
+          map[s].count++;
+          map[s].completions.push(r.completion_rate);
+          map[s].scores.push(r.success_score);
+        });
+      });
+      return map;
+    },
+
+    renderSkillsFreq(data) {
+      const map = this.getSkillMap(data);
+      const sorted = _.orderBy(Object.entries(map), [([,v])=>v.count], ['asc']).slice(-20);
+      this.renderChart('chart-skills-freq', this.apexDefaults({
+        chart: { type: 'bar', height: Math.max(280, sorted.length * 24) },
+        plotOptions: { bar: { horizontal: true, barHeight: '70%', borderRadius: 3 } },
+        dataLabels: { enabled: true, style: { fontSize: '10px', colors: ['#475569'] }, offsetX: 4 },
+        series: [{ name: 'Freelancers', data: sorted.map(([,v])=>v.count) }],
+        xaxis: { categories: sorted.map(([k])=>k), labels: { style: { fontSize: '10px' } } },
+        yaxis: { labels: { style: { fontSize: '10px' } } },
+        colors: ['#2563eb'],
+      }));
+      const total = _.sumBy(Object.values(map), 'count');
+      this.insertInsights('insights-skills-freq', [
+        `${Object.keys(map).length} unique skills across ${data.length} freelancers`,
+        `Most common: "${sorted[sorted.length-1]?.[0]}" (${sorted[sorted.length-1]?.[1]?.count} freelancers)`,
+        `Total skill instances: ${total} · Avg per freelancer: ${_.round(total/data.length,1)}`,
+      ]);
+    },
+
+    renderSkillCompletion(data) {
+      const map = this.getSkillMap(data);
+      const entries = _.orderBy(
+        Object.entries(map).map(([k,v]) => [k, _.round(_.mean(v.completions),1)]),
+        [([,v])=>v], ['desc']
+      ).slice(0, 20);
+      this.renderChart('chart-skill-completion', this.apexDefaults({
+        chart: { type: 'bar', height: Math.max(280, entries.length * 24) },
+        plotOptions: { bar: { horizontal: true, barHeight: '70%', borderRadius: 3 } },
+        dataLabels: { enabled: true, formatter: v => `${v}%`, style: { fontSize: '10px', colors: ['#475569'] }, offsetX: 4 },
+        series: [{ name: 'Avg Completion %', data: entries.map(([,v])=>v) }],
+        xaxis: { categories: entries.map(([k])=>k), max: 100, labels: { formatter: v=>`${v}%`, style: { fontSize: '10px' } } },
+        yaxis: { labels: { style: { fontSize: '10px' } } },
+        colors: entries.map(([,v]) => v >= 99 ? '#10b981' : v >= 90 ? '#f59e0b' : '#ef4444'),
+      }));
+      const perfect = entries.filter(([,v])=>v===100).length;
+      this.insertInsights('insights-skill-completion', [
+        `${perfect} skill(s) have 100% average completion rate — associated with highly reliable freelancers`,
+        `Lowest avg completion skill: "${entries[entries.length-1]?.[0]}" at ${entries[entries.length-1]?.[1]}%`,
+        'Skill completion reveals which domain freelancers are most reliable in',
+      ]);
+    },
+
+    renderSkillsScore(data) {
+      const series = data.map(r => ({
+        name: r.name,
+        data: [{ x: r.skills_count, y: _.round(r.success_score, 2) }]
+      }));
+      this.renderChart('chart-skills-score', this.apexDefaults({
+        chart: { type: 'scatter', height: 300 },
+        series,
+        xaxis: { title: { text: 'Number of Skills' }, tickAmount: 8 },
+        yaxis: { title: { text: 'Success Score' }, min: 0, max: 100 },
+        legend: { show: true, position: 'bottom', fontSize: '10px' },
+        markers: { size: 8 },
+      }));
+      const corr = this.pearsonCorr(data.map(r=>r.skills_count), data.map(r=>r.success_score));
+      this.insertInsights('insights-skills-score', [
+        `Correlation: ${_.round(corr,3)} — ${Math.abs(corr) > 0.5 ? 'strong' : Math.abs(corr) > 0.3 ? 'moderate' : 'weak'} ${corr > 0 ? 'positive' : 'negative'} relationship`,
+        `Avg skills per freelancer: ${_.round(_.meanBy(data,'skills_count'),1)}`,
+        `Most skilled: ${_.maxBy(data,'skills_count')?.name} (${_.maxBy(data,'skills_count')?.skills_count} skills, score: ${_.maxBy(data,'skills_count')?.success_score})`,
+      ]);
+    },
+
+    renderSkillsTreemap(data) {
+      const series = [{ data: data.map(r => ({ x: r.name, y: r.skills_count })) }];
+      this.renderChart('chart-skills-treemap', this.apexDefaults({
+        chart: { type: 'treemap', height: 300 },
+        series,
+        legend: { show: false },
+        plotOptions: { treemap: { enableShades: true, shadeIntensity: 0.5, colorScale: { ranges: [
+          { from: 0, to: 6, color: '#bfdbfe' },
+          { from: 7, to: 12, color: '#3b82f6' },
+          { from: 13, to: 50, color: '#1d4ed8' },
+        ] } } },
+        dataLabels: { enabled: true, style: { fontSize: '11px' } },
+      }));
+      this.insertInsights('insights-skills-treemap', [
+        `Largest block: ${_.maxBy(data,'skills_count')?.name} with ${_.maxBy(data,'skills_count')?.skills_count} skills`,
+        `Smallest: ${_.minBy(data,'skills_count')?.name} with ${_.minBy(data,'skills_count')?.skills_count} skills`,
+        'Darker blue = more diverse skill set',
+      ]);
+    },
+
+    renderSkillScoreAvg(data) {
+      const map = this.getSkillMap(data);
+      const entries = _.orderBy(
+        Object.entries(map).map(([k,v]) => [k, _.round(_.mean(v.scores),2)]),
+        [([,v])=>v], ['desc']
+      ).slice(0, 25);
+      this.renderChart('chart-skill-score-avg', this.apexDefaults({
+        chart: { type: 'bar', height: 320 },
+        plotOptions: { bar: { horizontal: false, columnWidth: '60%', borderRadius: 4 } },
+        dataLabels: { enabled: false },
+        series: [{ name: 'Avg Success Score', data: entries.map(([,v])=>v) }],
+        xaxis: { categories: entries.map(([k])=>k), labels: { rotate: -40, style: { fontSize: '9px' } } },
+        yaxis: { min: 0, max: 100, labels: { formatter: v=>v.toFixed(0) } },
+        colors: entries.map(([,v]) => v >= 85 ? '#10b981' : v >= 70 ? '#f59e0b' : '#ef4444'),
+      }));
+      this.insertInsights('insights-skill-score-avg', [
+        `Top-scoring skill: "${entries[0]?.[0]}" (avg score: ${entries[0]?.[1]})`,
+        `${entries.filter(([,v])=>v>=85).length} skill(s) are associated with top-tier (≥85) average scores`,
+        'Skills linked to high-scoring freelancers are most valuable for client acquisition',
+      ]);
+    },
+
+    // ═══════════════════════════════════════
+    // OPERATIONAL CHARTS
+    // ═══════════════════════════════════════
+
+    renderResponseDist(data) {
+      const sorted = _.orderBy(data, ['avg_response_time_minutes'], ['asc']);
+      const names = sorted.map(r => r.name);
+      const times = sorted.map(r => r.avg_response_time_minutes);
+      this.renderChart('chart-response-dist', this.apexDefaults({
+        chart: { type: 'bar', height: 300 },
+        plotOptions: { bar: { horizontal: false, columnWidth: '60%', borderRadius: 4 } },
+        dataLabels: { enabled: true, formatter: v => this.formatMinutes(v), style: { fontSize: '10px', colors: ['#475569'] } },
+        series: [{ name: 'Avg Response Time', data: times }],
+        xaxis: { categories: names, labels: { style: { fontSize: '10px' } } },
+        yaxis: { labels: { formatter: v => this.formatMinutes(v) }, title: { text: 'Minutes' } },
+        colors: times.map(t => t <= 60 ? '#10b981' : t <= 240 ? '#f59e0b' : '#ef4444'),
+      }));
+      const median = times[Math.floor(times.length/2)];
+      this.insertInsights('insights-response-dist', [
+        `Fastest responder: ${sorted[0]?.name} (${this.formatMinutes(times[0])})`,
+        `Slowest: ${sorted[sorted.length-1]?.name} (${this.formatMinutes(times[times.length-1])})`,
+        `Median response: ${this.formatMinutes(median)} — green = under 1 hour, red = over 4 hours`,
+      ]);
+    },
+
+    renderRehireDist(data) {
+      const binSize = 10;
+      const bins = this.getHistogramBins(data, 'rehire_rate', binSize, 100);
+      const labels = this.getHistogramLabels(binSize, 100);
+      
+      this.renderChart('chart-rehire-dist', this.apexDefaults({
+        chart: { type: 'bar', height: 300 },
+        plotOptions: { bar: { horizontal: false, columnWidth: '85%', borderRadius: 2 } },
+        dataLabels: { enabled: false },
+        series: [{ name: 'Freelancers', data: bins }],
+        xaxis: { categories: labels, title: { text: 'Rehire Rate Range (%)' } },
+        yaxis: { title: { text: 'Count' } },
+        colors: ['#8b5cf6'],
+      }));
+      this.insertInsights('insights-rehire-dist', [
+        `Shows the distribution of rehire rates across the platform`,
+        `Avg rehire rate: ${_.round(_.meanBy(data,'rehire_rate')||0,1)}%`,
+        `A right-skewed distribution indicates high general client satisfaction`
+      ]);
+    },
+
+    renderPortfolioProjects(data) {
+      const series = data.map(r => ({
+        name: r.name,
+        data: [{ x: r.portfolio_count || 0, y: r.total_completed_projects }]
+      }));
+      this.renderChart('chart-portfolio-projects', this.apexDefaults({
+        chart: { type: 'scatter', height: 300 },
+        series,
+        xaxis: { title: { text: 'Portfolio Items' }, tickAmount: 6 },
+        yaxis: { title: { text: 'Completed Projects' } },
+        legend: { show: true, position: 'bottom', fontSize: '10px' },
+        markers: { size: 9 },
+      }));
+      const corr = this.pearsonCorr(data.map(r=>r.portfolio_count||0), data.map(r=>r.total_completed_projects));
+      this.insertInsights('insights-portfolio-projects', [
+        `Correlation: ${_.round(corr,3)} — portfolio size ${Math.abs(corr)>0.4?'correlates':'weakly correlates'} with project volume`,
+        `Most projects: ${_.maxBy(data,'total_completed_projects')?.name} (${_.maxBy(data,'total_completed_projects')?.total_completed_projects})`,
+        `Largest portfolio: ${_.maxBy(data,'portfolio_count')?.name} (${_.maxBy(data,'portfolio_count')?.portfolio_count} items)`,
+      ]);
+    },
+
+    renderRegistration(data) {
+      const withDates = data.filter(r => r._regYear).map(r => ({
+        name: r.name, year: r._regYear, label: r._regLabel, score: r.success_score
+      }));
+      if (!withDates.length) {
+        this.destroyChart('chart-registration');
+        return;
+      }
+      const sorted = _.orderBy(withDates, ['year'], ['asc']);
+      this.renderChart('chart-registration', this.apexDefaults({
+        chart: { type: 'area', height: 300 },
+        series: [{ name: 'Success Score', data: sorted.map(r=>r.score) }],
+        xaxis: { categories: sorted.map(r=>r.label), labels: { style: { fontSize: '10px' }, rotate: -30 } },
+        yaxis: { title: { text: 'Success Score' }, min: 0, max: 100 },
+        fill: { type: 'gradient', gradient: { shadeIntensity: 1, opacityFrom: 0.4, opacityTo: 0.05 } },
+        stroke: { curve: 'smooth', width: 2 },
+        markers: { size: 5, labels: { enabled: true } },
+        annotations: {
+          points: sorted.map(r => ({
+            x: r.label, y: r.score,
+            label: { text: r.name, style: { fontSize: '9px', background: '#fff', borderColor: '#e2e8f0' } }
+          }))
+        },
+        colors: ['#2563eb'],
+      }));
+      this.insertInsights('insights-registration', [
+        `Earliest member: ${sorted[0]?.name} (joined ${sorted[0]?.label})`,
+        `Newest member: ${sorted[sorted.length-1]?.name} (joined ${sorted[sorted.length-1]?.label})`,
+        'Area shows success score trajectory — newer members can still outperform veterans',
+      ]);
+    },
+
+    renderCommDist(data) {
+      const binSize = 10;
+      const bins = this.getHistogramBins(data, 'communication_success_rate', binSize, 100);
+      const labels = this.getHistogramLabels(binSize, 100);
+      
+      this.renderChart('chart-comm-dist', this.apexDefaults({
+        chart: { type: 'bar', height: 300 },
+        plotOptions: { bar: { horizontal: false, columnWidth: '85%', borderRadius: 2 } },
+        dataLabels: { enabled: false },
+        series: [{ name: 'Freelancers', data: bins }],
+        xaxis: { categories: labels, title: { text: 'Communication Success (%)' } },
+        yaxis: { title: { text: 'Count' } },
+        colors: ['#06b6d4'],
+      }));
+      this.insertInsights('insights-comm-dist', [
+        `Distribution of communication success rates`,
+        `Avg communication rate: ${_.round(_.meanBy(data,'communication_success_rate')||0,1)}%`,
+        'Peaks at the high end indicate proactive freelancer engagement'
+      ]);
+    },
+
+    renderScoreResponse(data) {
+      const series = data.map(r => ({
+        name: r.name,
+        data: [{ x: r.avg_response_time_minutes, y: _.round(r.success_score,2) }]
+      }));
+      this.renderChart('chart-score-response', this.apexDefaults({
+        chart: { type: 'scatter', height: 300 },
+        series,
+        xaxis: { title: { text: 'Avg Response Time (min)' }, labels: { formatter: v => this.formatMinutes(v) } },
+        yaxis: { title: { text: 'Success Score' }, min: 0, max: 100 },
+        legend: { show: true, position: 'bottom', fontSize: '10px' },
+        markers: { size: 8 },
+      }));
+      const corr = this.pearsonCorr(data.map(r=>r.avg_response_time_minutes), data.map(r=>r.success_score));
+      this.insertInsights('insights-score-response', [
+        `Correlation: ${_.round(corr,3)} — response time ${corr < -0.3 ? 'negatively' : 'weakly'} associated with success`,
+        `Fastest top-scorer: ${_.orderBy(data,['avg_response_time_minutes'],['asc'])[0]?.name}`,
+        'Fast response + high score = ideal hire: reliable, fast, and high-quality',
+      ]);
+    },
+
+    // ═══════════════════════════════════════
+    // CUSTOM EXPLORER
+    // ═══════════════════════════════════════
+
+    addCustomChart() {
+      this.customChartCounter++;
+      const id = `cc_${this.customChartCounter}`;
+      this.customCharts.push({ id, type: 'bar', xCol: 'name', yCol: 'success_score', sizeCol: '', title: `Custom Chart ${this.customChartCounter}` });
+      this.$nextTick(() => this.renderCustomChart(this.customCharts[this.customCharts.length - 1]));
+    },
+
+    removeCustomChart(idx) {
+      const cc = this.customCharts[idx];
+      this.destroyChart(`custom-chart-${cc.id}`);
+      this.customCharts.splice(idx, 1);
+    },
+
+    renderCustomChart(cc) {
+      if (!cc.yCol) return;
+      const data = this.topNData();
+      const containerId = `custom-chart-${cc.id}`;
+      const xIsText = cc.xCol === 'name' || cc.xCol === 'title';
+      const labels = xIsText ? data.map(r => r[cc.xCol] || '—') : data.map(r => r[cc.xCol] || 0);
+      const yVals = data.map(r => _.round(r[cc.yCol] || 0, 2));
+      cc.title = `${this.numericCols.find(c=>c.key===cc.yCol)?.label || cc.yCol} by ${cc.xCol}`;
+
+      if (cc.type === 'scatter' || (cc.type === 'bubble' && cc.sizeCol)) {
+        const series = data.map(r => ({
+          name: r.name,
+          data: cc.sizeCol
+            ? [{ x: r[cc.xCol]||0, y: r[cc.yCol]||0, z: Math.max(r[cc.sizeCol]||1, 5) }]
+            : [{ x: r[cc.xCol]||0, y: r[cc.yCol]||0 }]
+        }));
+        this.renderChart(containerId, this.apexDefaults({
+          chart: { type: cc.sizeCol ? 'bubble' : 'scatter', height: 300 },
+          series,
+          xaxis: { title: { text: cc.xCol } },
+          yaxis: { title: { text: cc.yCol } },
+          legend: { show: true, position: 'bottom', fontSize: '10px' },
+          markers: { size: 7 },
+        }));
+        return;
+      }
+      if (cc.type === 'donut') {
+        this.renderChart(containerId, this.apexDefaults({
+          chart: { type: 'donut', height: 300 },
+          series: yVals,
+          labels: data.map(r=>r.name||'—'),
+          legend: { position: 'bottom' },
+        }));
+        return;
+      }
+      if (cc.type === 'radar') {
+        this.renderChart(containerId, this.apexDefaults({
+          chart: { type: 'radar', height: 300 },
+          series: [{ name: cc.yCol, data: yVals }],
+          xaxis: { categories: labels },
+        }));
+        return;
+      }
+      this.renderChart(containerId, this.apexDefaults({
+        chart: { type: cc.type, height: 300 },
+        series: [{ name: this.numericCols.find(c=>c.key===cc.yCol)?.label || cc.yCol, data: yVals }],
+        xaxis: { categories: labels, labels: { style: { fontSize: '10px' }, rotate: -30 } },
+        yaxis: { labels: { formatter: v => parseFloat(v).toFixed(1) } },
+        plotOptions: cc.type === 'bar' ? { bar: { borderRadius: 4 } } : {},
+        stroke: cc.type === 'line' || cc.type === 'area' ? { curve: 'smooth', width: 2 } : {},
+        fill: cc.type === 'area' ? { type: 'gradient', gradient: { opacityFrom: 0.4, opacityTo: 0.05 } } : {},
+      }));
+    },
+
+    // ═══════════════════════════════════════
+    // MATH UTILITIES (Lodash + manual)
+    // ═══════════════════════════════════════
+
+    pearsonCorr(xs, ys) {
+      const n = xs.length;
+      if (n < 2) return 0;
+      const mx = _.mean(xs), my = _.mean(ys);
+      const num = _.sum(xs.map((x,i) => (x - mx) * (ys[i] - my)));
+      const den = Math.sqrt(_.sum(xs.map(x => (x-mx)**2)) * _.sum(ys.map(y => (y-my)**2)));
+      return den === 0 ? 0 : num / den;
+    },
+  };
+}
+</script>
+
+</body>
+</html>
+

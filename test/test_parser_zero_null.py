@@ -93,8 +93,8 @@ def test_new_account_placeholder_zero_null(parser):
     assert profile is not None
     assert profile.name == "سارة علي"
     assert profile.title == "مصممة جرافيك"
-    assert profile.completion_rate == 100.0  # Normalized default
-    assert profile.employment_rate == 100.0
+    assert profile.completion_rate == 0.0  # Normalized default for 0 projects
+    assert profile.employment_rate == 0.0
     assert profile.received_projects == 0.0
     assert profile.financial_deals == 0.0
     assert profile.active_projects == 0.0
@@ -159,6 +159,70 @@ def test_adversarial_html_fallback(parser):
     assert profile.name == "كريم حسن" or "karim_adv" in profile.name or profile.name != "Unknown"
     assert profile.completion_rate == 92.5 or profile.completion_rate == 100.0
     assert profile.total_completed_projects == 7.0 or profile.total_completed_projects >= 0.0
+
+    StrictZeroNullValidator.validate_profile(profile, html=html)
+
+
+def test_smartify_profile_real_parsing(parser):
+    """Test Smartify-like profile ensuring 0 completed projects, bio extraction, verifications, and badges."""
+    html = """
+    <div class="usercard">
+        <h1 class="profile-name"><bdi>Smartify E.</bdi></h1>
+        <li class="profile-title">مهندس برمجيات</li>
+    </div>
+    <div class="carda__content">
+        <h2>نبذة عني</h2>
+        <p>IOT Developer (PCB Design/Assembly, Arduino, NodeMCU, ESP8266/32, Sensors, Electronic Components, etc. ...)</p>
+        <p>Programmer (.Net MAUI (Android/IOS), MATLAB, C#, Arduino IDE, etc. ...)</p>
+    </div>
+    <div id="profile-stats">
+        <h4 class="heada__title">إحصائيات</h4>
+        <table class="table table-meta">
+            <tr><td>التقييمات</td><td>(0)</td></tr>
+            <tr><td>إكمال المشاريع</td><td>لم يحسب بعد</td></tr>
+            <tr><td>التسليم بالموعد</td><td>لم يحسب بعد</td></tr>
+            <tr><td>إعادة التوظيف</td><td>لم يحسب بعد</td></tr>
+            <tr><td>نجاح التواصلات</td><td>لم يحسب بعد</td></tr>
+            <tr><td>متوسط سرعة الرد</td><td>لم يحسب بعد</td></tr>
+            <tr><td>تاريخ التسجيل</td><td>27 ديسمبر 2023</td></tr>
+            <tr><td>آخر تواجد</td><td>منذ سنتين</td></tr>
+        </table>
+    </div>
+    <div id="profile-verifications">
+        <h4 class="heada__title">توثيقات</h4>
+        <table>
+            <tr>
+                <td><i class="fa text-success fa-check"></i>البريد الإلكتروني</td>
+                <td><i class="fa text-muted fa-times"></i>رقم الجوال</td>
+            </tr>
+            <tr>
+                <td><i class="fa text-muted fa-times"></i>الهوية الشخصية</td>
+            </tr>
+        </table>
+    </div>
+    <ul class="badges">
+        <li><img alt="مستخدم منذ سنتين" src="badge.svg"/></li>
+    </ul>
+    <ul class="skills">
+        <li class="skills__item"><a href="#"><bdi>C# Programming</bdi></a></li>
+        <li class="skills__item"><a href="#"><bdi>آردوينو</bdi></a></li>
+        <li class="skills__item"><a href="#"><bdi>ماتلاب</bdi></a></li>
+    </ul>
+    """
+    profile = parser.parse_profile(html, "https://mostaql.com/u/Smartify")
+    assert profile is not None
+    assert profile.name == "Smartify E."
+    assert profile.total_completed_projects == 0.0
+    assert profile.active_projects == 0.0
+    assert profile.received_projects == 0.0
+    assert profile.financial_deals == 0.0
+    assert profile.completion_rate == 0.0
+    assert "IOT Developer" in profile.bio
+    assert "ESP8266" in profile.bio
+    assert "البريد الإلكتروني" in profile.verifications
+    assert "مستخدم منذ سنتين" in profile.badges
+    assert profile.portfolio_count == 0.0
+    assert len(profile.skills) == 3
 
     StrictZeroNullValidator.validate_profile(profile, html=html)
 

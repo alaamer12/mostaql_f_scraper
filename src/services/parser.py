@@ -186,6 +186,9 @@ class ParsingService:
         name = self._extract_name(soup, url)
         title = self._extract_title(soup)
         location = self._extract_location(soup)
+        bio = self._extract_bio(soup)
+        verifications = self._extract_verifications(soup)
+        badges = self._extract_badges(soup)
         rating, reviews_count = self._extract_rating(soup)
         skills = self._extract_skills(soup)
         portfolio_count = self._extract_portfolio_count(soup, portfolio_html)
@@ -197,21 +200,36 @@ class ParsingService:
         total_completed = clean_numeric_value(stats_raw.get("total_completed_projects"), default=0.0)
         active_proj = clean_numeric_value(stats_raw.get("active_projects"), default=0.0)
         
-        # Rates normalization (default to 100.0 if not yet calculated or new account)
-        completion_rate_val = clean_numeric_value(stats_raw.get("completion_rate"), default=100.0)
-        ontime_rate_val = clean_numeric_value(stats_raw.get("ontime_delivery_rate"), default=100.0)
-        rehire_rate_val = clean_numeric_value(stats_raw.get("rehire_rate"), default=100.0 if total_completed > 0 else 0.0)
-        comm_rate_val = clean_numeric_value(stats_raw.get("communication_success_rate"), default=100.0)
+        # Rates normalization:
+        # If the user has completed projects, parse the rate or default to 100.0.
+        # If the user has 0 completed projects (new / uncalculated profile), rates default to 0.0.
+        if total_completed > 0:
+            completion_rate_val = clean_numeric_value(stats_raw.get("completion_rate"), default=100.0)
+            ontime_rate_val = clean_numeric_value(stats_raw.get("ontime_delivery_rate"), default=100.0)
+            rehire_rate_val = clean_numeric_value(stats_raw.get("rehire_rate"), default=100.0)
+            comm_rate_val = clean_numeric_value(stats_raw.get("communication_success_rate"), default=100.0)
+        else:
+            # For 0 completed projects, if an explicit numeric rate exists (not placeholder), use it, else 0.0
+            raw_comp = stats_raw.get("completion_rate")
+            completion_rate_val = clean_numeric_value(raw_comp, default=0.0) if raw_comp and not is_placeholder(raw_comp) else 0.0
+            
+            raw_ontime = stats_raw.get("ontime_delivery_rate")
+            ontime_rate_val = clean_numeric_value(raw_ontime, default=0.0) if raw_ontime and not is_placeholder(raw_ontime) else 0.0
+            
+            raw_rehire = stats_raw.get("rehire_rate")
+            rehire_rate_val = clean_numeric_value(raw_rehire, default=0.0) if raw_rehire and not is_placeholder(raw_rehire) else 0.0
+            
+            raw_comm = stats_raw.get("communication_success_rate")
+            comm_rate_val = clean_numeric_value(raw_comm, default=0.0) if raw_comm and not is_placeholder(raw_comm) else 0.0
 
         # Employer-only fields inferential derivation:
-        # employment_rate: if present, parse; else calculate from completion and rehire or default 100.0
         if "employment_rate" in stats_raw and not is_placeholder(stats_raw["employment_rate"]):
-            employment_rate_val = clean_numeric_value(stats_raw["employment_rate"], default=100.0)
+            employment_rate_val = clean_numeric_value(stats_raw["employment_rate"], default=0.0)
         else:
             if total_completed > 0:
                 employment_rate_val = min(100.0, round((completion_rate_val + rehire_rate_val) / 2.0, 2))
             else:
-                employment_rate_val = 100.0
+                employment_rate_val = 0.0
 
         # received_projects: if present, parse; else derive from total_completed + active
         if "received_projects" in stats_raw and not is_placeholder(stats_raw["received_projects"]):
@@ -226,9 +244,9 @@ class ParsingService:
             financial_deals_val = total_completed
 
         # Response time, Registration Date, and Activity
-        resp_raw = stats_raw.get("avg_response_time_raw") or "خلال يوم"
-        if is_placeholder(resp_raw):
-            resp_raw = "خلال يوم"
+        resp_raw = stats_raw.get("avg_response_time_raw")
+        if not resp_raw or is_placeholder(resp_raw):
+            resp_raw = "غير محدد"
         avg_resp_mins = parse_duration_to_minutes(resp_raw)
 
         reg_raw = stats_raw.get("registration_date_raw") or "2021-01-01"
@@ -282,6 +300,7 @@ class ParsingService:
             category="development",
             title=title,
             location=location,
+            bio=bio,
             rating=rating,
             reviews_count=reviews_count,
             completion_rate=completion_rate_val,
@@ -301,6 +320,8 @@ class ParsingService:
             member_since=reg_raw,
             registration_date=reg_iso,
             registration_date_str=reg_iso,
+            verifications=verifications,
+            badges=badges,
             parse_confidence="ok",
             parse_signals=signals,
             skills=skills,
@@ -359,6 +380,97 @@ class ParsingService:
                 if txt:
                     return txt
         return "غير محدد"
+
+    def _extract_bio(self, soup: BeautifulSoup) -> str:
+        """Extract profile biography / about section."""
+        # Check specific bio containers
+        selectors = [
+            "#about_content",
+            ".profile-about",
+            ".user-bio",
+            ".profile-bio",
+            ".carda__content",
+        ]
+        for sel in selectors:
+            el = soup.select_one(sel)
+            if el:
+                txt = el.get_text("\n", strip=True)
+                if txt:
+                    return txt
+
+        # Check section headed by 'نبذة عني' or 'عني' or 'About'
+        for h in soup.find_all(["h2", "h3", "h4", "h5"]):
+            header_txt = h.get_text(strip=True)
+            if any(k in header_txt for k in ["نبذة عني", "عني", "نبذة"]):
+                # Look at next sibling or parent panel/card content
+                parent_card = h.find_parent("div", class_=lambda c: c and any(x in c for x in ["card", "panel", "widget"]))
+                if parent_card:
+                    body = parent_card.select_one(".carda__content, .card__body, .panel-body, .widget__content")
+                    if body:
+                        txt = body.get_text("\n", strip=True)
+                        if txt:
+                            return txt
+                
+                # Check next sibling elements
+                curr = h.find_next_sibling()
+                bio_parts = []
+                while curr and curr.name not in ["h1", "h2", "h3", "h4", "h5"]:
+                    t = curr.get_text("\n", strip=True)
+                    if t:
+                        bio_parts.append(t)
+                    curr = curr.find_next_sibling()
+                if bio_parts:
+                    return "\n".join(bio_parts).strip()
+
+        return ""
+
+    def _extract_verifications(self, soup: BeautifulSoup) -> List[str]:
+        """Extract verified items (e.g. email, phone, identity)."""
+        verifications = []
+        for h in soup.find_all(["h2", "h3", "h4", "h5"]):
+            if "توثيق" in h.get_text():
+                container = h.find_parent("div", class_=lambda c: c and any(x in c for x in ["card", "panel", "widget"]))
+                if not container:
+                    container = h.parent.parent if h.parent else None
+                if container:
+                    # Look only at leaf table cells or list items
+                    for td in container.find_all(["td", "li"]):
+                        # If it has a checkmark or success class
+                        if td.find("i", class_=lambda c: c and any(x in str(c) for x in ["fa-check", "text-success", "verified"])):
+                            t = td.get_text(strip=True)
+                            if t and t not in verifications and "توثيق" not in t:
+                                verifications.append(t)
+                break
+        return verifications
+
+    def _extract_badges(self, soup: BeautifulSoup) -> List[str]:
+        """Extract profile badges / achievements."""
+        badges = []
+        # Badges list container
+        badges_container = soup.select_one("ul.badges, .badges-list, .user-badges")
+        if badges_container:
+            for img in badges_container.find_all("img"):
+                alt = img.get("alt") or img.get("title")
+                if alt and alt.strip() and alt.strip() not in badges:
+                    badges.append(alt.strip())
+            for li in badges_container.find_all("li"):
+                txt = li.get_text(strip=True)
+                if txt and txt not in badges:
+                    badges.append(txt)
+
+        if not badges:
+            for h in soup.find_all(["h2", "h3", "h4", "h5"]):
+                if "أوسمة" in h.get_text() or "اوسمة" in h.get_text():
+                    container = h.find_parent("div", class_=lambda c: c and any(x in c for x in ["card", "panel", "widget"]))
+                    if not container:
+                        container = h.parent.parent if h.parent else None
+                    if container:
+                        for img in container.find_all("img"):
+                            alt = img.get("alt") or img.get("title")
+                            if alt and alt.strip() and alt.strip() not in badges:
+                                badges.append(alt.strip())
+                    break
+        return badges
 
     def _extract_rating(self, soup: BeautifulSoup) -> Tuple[float, int]:
         rating = 0.0
@@ -441,21 +553,24 @@ class ParsingService:
         # Tier 2: Label-Driven DOM Adjacency Scanning
         label_results, _ = label_driven_extract(soup)
 
-        # Merge Tier 1 and Tier 2
+        # Merge Tier 1 and Tier 2 (Structural takes precedence for structured panels)
         merged = {**label_results, **structural_results}
 
-        # Check if key stats are missing; if so, run Tier 3 Inference Engine
+        # Check if key stats are missing; if so, run Tier 3 Inference Engine ONLY for un-extracted fields (not placeholders)
         needed_fields = [
             "completion_rate", "ontime_delivery_rate", "rehire_rate",
             "communication_success_rate", "total_completed_projects",
             "active_projects", "avg_response_time_raw", "registration_date_raw",
             "last_active_raw",
         ]
-        missing = [f for f in needed_fields if f not in merged or is_placeholder(merged.get(f))]
+        # Only consider missing if the field was genuinely not found at all in the document.
+        # If the document contained a placeholder like 'لم يحسب بعد', we DO NOT want inference to guess numbers from random body text.
+        missing = [f for f in needed_fields if f not in merged]
         if missing:
             inference_results = infer_fields(soup, target_fields=missing)
             for f in missing:
                 if f in inference_results and inference_results[f].get("value"):
+                    # Only accept if confidence is reasonable
                     merged[f] = inference_results[f]["value"]
 
         return merged

@@ -1,0 +1,22 @@
+{
+  "fingerprint": "0d867221bb083dcd3d2e",
+  "parquet_file": "concat_0d867221bb083dcd3d2e.parquet",
+  "parquet_size": 71545,
+  "file_count": 2,
+  "source_files": [
+    {
+      "path": "F:/Projects/Languages/Python/WorkingOnIt/mostaql_f_scraper/collected/analysis.json",
+      "name": "analysis.json",
+      "size": 1077760,
+      "mtime_ns": 1785647302932425800,
+      "fingerprint": "afe278914b96dd3d2bb51563ae6615768f21390ca6c349a3f4cf25e61b576743"
+    },
+    {
+      "path": "F:/Projects/Languages/Python/WorkingOnIt/mostaql_f_scraper/collected/analysis.json",
+      "name": "analysis.json",
+      "size": 1077760,
+      "mtime_ns": 1785647302932425800,
+      "fingerprint": "afe278914b96dd3d2bb51563ae6615768f21390ca6c349a3f4cf25e61b576743"
+    }
+  ]
+}
